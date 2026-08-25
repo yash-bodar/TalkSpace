@@ -1,0 +1,44 @@
+<?php
+
+namespace App\Policies;
+
+use App\Models\Conversation;
+use App\Models\User;
+
+class ConversationPolicy
+{
+    /**
+     * Determine whether the user can view the model.
+     *
+     * // YB - 24-08-2026 code comment
+     */
+    public function view(User $user, Conversation $conversation): bool
+    {
+        return $conversation->isParticipant($user->id);
+    }
+
+    /**
+     * Determine whether the user can send messages in the conversation.
+     *
+     * // YB - 24-08-2026 code comment
+     */
+    public function sendMessage(User $user, Conversation $conversation): bool
+    {
+        return $conversation->isParticipant($user->id);
+    }
+
+    /**
+     * Determine whether the user can delete the model.
+     *
+     * // YB - 24-08-2026 code comment
+     */
+    public function delete(User $user, Conversation $conversation): bool
+    {
+        if ($conversation->type === 'group') {
+            $pivot = $conversation->conversationUsers()->where('user_id', $user->id)->first();
+            return $pivot && $pivot->role === 'admin';
+        }
+
+        return $conversation->isParticipant($user->id);
+    }
+}
