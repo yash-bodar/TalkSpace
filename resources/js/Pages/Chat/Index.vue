@@ -1353,8 +1353,8 @@ const setupEchoListeners = () => {
             }
         });
 
-    // 2. Heartbeat Channel: Guaranteed real-time active pings across all users
-    window.Echo.channel('online-heartbeats')
+    // 2. Heartbeat Channel: Guaranteed real-time active pings across all users - YB - 27-08-2026 Private authenticated channel
+    window.Echo.private('online-heartbeats')
         .listen('.user.heartbeat', (event) => {
             if (event.user_id && Number(event.user_id) !== Number(currentUser.value?.id)) {
                 markUserActive(event.user_id);
@@ -1447,10 +1447,14 @@ const subscribeToActiveChat = () => {
         })
         .listen('.message.delivered', (event) => {
             if (event.user_id) markUserActive(event.user_id);
-            if (event.user_id !== currentUser.value.id) {
+            if (Number(event.conversation_id) === Number(props.activeConversation?.id) && event.user_id !== currentUser.value?.id) {
+                const eventDeliveredAt = event.delivered_at ? new Date(event.delivered_at).getTime() : Date.now();
                 messageList.value.forEach(m => {
-                    if (m.sender_id === currentUser.value.id && !m.delivered_at) {
-                        m.delivered_at = event.delivered_at;
+                    if (m.sender_id === currentUser.value?.id && !m.delivered_at) {
+                        const msgCreated = m.created_at ? new Date(m.created_at).getTime() : 0;
+                        if (msgCreated <= eventDeliveredAt) {
+                            m.delivered_at = event.delivered_at;
+                        }
                     }
                 });
             }
@@ -1490,11 +1494,15 @@ const subscribeToActiveChat = () => {
         })
         .listen('.message.read', (event) => {
             if (event.user_id) markUserActive(event.user_id);
-            if (event.user_id !== currentUser.value.id) {
+            if (Number(event.conversation_id) === Number(props.activeConversation?.id) && event.user_id !== currentUser.value?.id) {
+                const eventReadAt = event.read_at ? new Date(event.read_at).getTime() : Date.now();
                 messageList.value.forEach(m => {
-                    if (m.sender_id === currentUser.value.id) {
-                        m.read_at = event.read_at;
-                        m.delivered_at = event.read_at;
+                    if (m.sender_id === currentUser.value?.id) {
+                        const msgCreated = m.created_at ? new Date(m.created_at).getTime() : 0;
+                        if (msgCreated <= eventReadAt) {
+                            if (!m.read_at) m.read_at = event.read_at;
+                            if (!m.delivered_at) m.delivered_at = event.read_at;
+                        }
                     }
                 });
             }

@@ -218,10 +218,12 @@ class ChatController extends Controller
     /**
      * Edit message text.
      *
-     * // YB - 25-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function updateMessage(Request $request, \App\Models\Message $message): JsonResponse
     {
+        Gate::authorize('update', $message);
+
         $request->validate([
             'body' => ['required', 'string', 'max:5000'],
         ]);
@@ -236,11 +238,16 @@ class ChatController extends Controller
     /**
      * Delete message (for me or for everyone).
      *
-     * // YB - 25-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function deleteMessage(Request $request, \App\Models\Message $message): JsonResponse
     {
-        $type = $request->input('type', 'me'); // 'me' | 'everyone'
+        $request->validate([
+            'type' => ['required', 'string', 'in:me,everyone'],
+        ]);
+
+        $type = (string) $request->input('type', 'me');
+        Gate::authorize('delete', [$message, $type]);
 
         if ($type === 'everyone') {
             $updated = $this->chatService->deleteMessageForEveryone($request->user(), $message);
@@ -462,5 +469,53 @@ class ChatController extends Controller
         $info = $this->chatService->getMessageDeliveryInfo($message, $request->user());
 
         return response()->json($info);
+    }
+
+    /**
+     * Transmit WebRTC call signal payload to other participants.
+     *
+     * // YB - 27-08-2026 code comment
+     */
+    public function signalCall(Request $request, Conversation $conversation): JsonResponse
+    {
+        Gate::authorize('view', $conversation);
+
+        $validated = $request->validate([
+            'type' => ['required', 'string', 'in:offer,answer,candidate,hangup,rejected'],
+            'call_type' => ['nullable', 'string', 'in:audio,video'],
+            'payload' => ['nullable'],
+        ]);
+
+        $this->chatService->signalCall($request->user(), $conversation, $validated);
+
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Log a call status / duration message in the conversation stream.
+     *
+     * // YB - 27-08-2026 code comment
+     */
+    public function logCall(Request $request, Conversation $conversation): JsonResponse
+    {
+        Gate::authorize('view', $conversation);
+
+        $request->validate([
+            'status' => ['required', 'string', 'in:missed,completed,declined'],
+            'call_type' => ['required', 'string', 'in:audio,video'],
+            'duration' => ['nullable', 'string', 'max:50'],
+        ]);
+
+        $message = $this->chatService->logCallMessage(
+            $request->user(),
+            $conversation,
+            (string) $request->input('status'),
+            (string) $request->input('call_type'),
+            $request->input('duration')
+        );
+
+        return response()->json([
+            'message' => (new MessageResource($message))->resolve($request),
+        ]);
     }
 }

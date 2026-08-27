@@ -44,8 +44,8 @@ class MessageResource extends JsonResource
                     return $readAt && $readAt >= $msgCreatedAt;
                 });
             } else {
-                $deliveredToAll = true;
-                $readByAll = true;
+                $deliveredToAll = false;
+                $readByAll = false;
             }
         } else {
             $deliveredToAll = ! empty($this->delivered_at);

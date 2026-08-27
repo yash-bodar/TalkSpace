@@ -36,9 +36,9 @@ class ConversationResource extends JsonResource
             $lastReadAt = $currentParticipant?->pivot?->last_read_at;
         }
 
-        // Calculate unread message count
-        $unreadCount = 0;
-        if ($this->relationLoaded('messages') && $this->messages) {
+        // Calculate unread message count efficiently
+        $unreadCount = (int) ($this->unread_count ?? 0);
+        if (! isset($this->unread_count) && $this->relationLoaded('messages') && $this->messages) {
             $unreadCount = $this->messages
                 ->where('sender_id', '!=', $authUserId)
                 ->filter(function ($m) use ($lastReadAt) {
@@ -85,6 +85,15 @@ class ConversationResource extends JsonResource
             })->values()->all();
         }
 
+        $hasPendingJoinRequest = false;
+        if ($this->type === 'group' && $authUserId) {
+            if ($this->relationLoaded('joinRequests') && $this->joinRequests) {
+                $hasPendingJoinRequest = $this->joinRequests->where('user_id', $authUserId)->where('status', 'pending')->isNotEmpty();
+            } else {
+                $hasPendingJoinRequest = $this->joinRequests()->where('user_id', $authUserId)->where('status', 'pending')->exists();
+            }
+        }
+
         return [
             'id' => $this->id,
             'type' => $this->type,
@@ -97,7 +106,7 @@ class ConversationResource extends JsonResource
             'is_admin' => $this->isAdmin($authUserId),
             'user_role' => $this->getUserRole($authUserId),
             'is_member' => $this->isParticipant($authUserId),
-            'has_pending_join_request' => $this->type === 'group' && $this->joinRequests()->where('user_id', $authUserId)->where('status', 'pending')->exists(),
+            'has_pending_join_request' => $hasPendingJoinRequest,
             'join_requests' => $joinRequests,
             // YB - 26-08-2026 Resolve nested resources directly to avoid nested { data: ... } object wrapping
             'direct_recipient' => $directRecipient ? (new UserResource($directRecipient))->resolve($request) : null,

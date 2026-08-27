@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class SendMessageRequest extends FormRequest
 {
@@ -24,10 +25,21 @@ class SendMessageRequest extends FormRequest
      */
     public function rules(): array
     {
+        $conversation = $this->route('conversation');
+        $conversationId = $conversation instanceof \App\Models\Conversation ? $conversation->id : $conversation;
+
         return [
             'body' => ['nullable', 'string', 'max:5000', 'required_without:attachment'],
             'attachment' => ['nullable', 'file', 'max:20480', 'mimes:jpg,jpeg,png,gif,webp,pdf,doc,docx,zip,txt'],
-            'reply_to_id' => ['nullable', 'integer', 'exists:messages,id'],
+            'reply_to_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('messages', 'id')->where(function ($query) use ($conversationId) {
+                    if ($conversationId) {
+                        $query->where('conversation_id', $conversationId);
+                    }
+                }),
+            ],
         ];
     }
 
@@ -41,6 +53,7 @@ class SendMessageRequest extends FormRequest
         return [
             'body.required_without' => 'Please enter a message or select an attachment to send.',
             'attachment.max' => 'The attachment size must not exceed 20MB.',
+            'reply_to_id.exists' => 'The referenced message is invalid or belongs to another conversation.',
         ];
     }
 }

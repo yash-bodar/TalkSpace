@@ -145,10 +145,18 @@ class Conversation extends Model
     /**
      * Check if a specific user is a participant of this conversation.
      *
-     * // YB - 24-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function isParticipant(int $userId): bool
     {
+        if ($this->relationLoaded('participants') && $this->participants) {
+            return $this->participants->contains('id', $userId);
+        }
+
+        if ($this->relationLoaded('conversationUsers') && $this->conversationUsers) {
+            return $this->conversationUsers->contains('user_id', $userId);
+        }
+
         return $this->participants()->where('users.id', $userId)->exists();
     }
 

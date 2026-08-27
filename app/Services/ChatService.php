@@ -23,7 +23,7 @@ class ChatService
     /**
      * Retrieve all conversations for the authenticated user ordered by last activity.
      *
-     * // YB - 24-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function getUserConversations(User $user): Collection
     {
@@ -32,31 +32,44 @@ class ChatService
                 'participants',
                 'conversationUsers',
                 'latestMessage.sender',
-                'messages',
             ])
+            ->withCount(['messages as unread_count' => function ($q) use ($user) {
+                $q->where('sender_id', '!=', $user->id)
+                    ->where(function ($sub) use ($user) {
+                        $sub->whereNull('read_at')
+                            ->orWhereRaw('messages.created_at > (
+                                SELECT COALESCE(last_read_at, "1970-01-01 00:00:00")
+                                FROM conversation_users
+                                WHERE conversation_users.conversation_id = messages.conversation_id
+                                AND conversation_users.user_id = ?
+                            )', [$user->id]);
+                    });
+            }])
             ->orderByDesc('last_message_at')
             ->orderByDesc('created_at')
             ->get();
     }
 
     /**
-     * Retrieve messages for a given conversation with sender loaded.
+     * Retrieve latest messages for a given conversation ordered chronologically.
      *
-     * // YB - 24-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function getConversationMessages(Conversation $conversation, int $limit = 100): Collection
     {
         return $conversation->messages()
             ->with(['sender', 'replyTo.sender', 'reactions.user'])
-            ->orderBy('created_at', 'asc')
+            ->latest('created_at')
             ->take($limit)
-            ->get();
+            ->get()
+            ->reverse()
+            ->values();
     }
 
     /**
-     * Find existing direct 1-1 conversation between two users or create a new one atomically.
+     * Find existing direct 1-1 conversation between two users or create a new one atomically with locking.
      *
-     * // YB - 24-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function getOrCreateDirectConversation(User $user, int $recipientId): Conversation
     {
@@ -64,21 +77,22 @@ class ChatService
             throw new \InvalidArgumentException('Cannot create a conversation with yourself.');
         }
 
-        // Look for existing direct conversation between these two users
-        $existingConversation = Conversation::where('type', 'direct')
-            ->whereHas('participants', function ($query) use ($user) {
-                $query->where('users.id', $user->id);
-            })
-            ->whereHas('participants', function ($query) use ($recipientId) {
-                $query->where('users.id', $recipientId);
-            })
-            ->first();
-
-        if ($existingConversation) {
-            return $existingConversation->loadMissing(['participants', 'conversationUsers', 'latestMessage.sender']);
-        }
-
         return DB::transaction(function () use ($user, $recipientId) {
+            // Look for existing direct conversation between these two users inside transaction with lock
+            $existingConversation = Conversation::where('type', 'direct')
+                ->whereHas('participants', function ($query) use ($user) {
+                    $query->where('users.id', $user->id);
+                })
+                ->whereHas('participants', function ($query) use ($recipientId) {
+                    $query->where('users.id', $recipientId);
+                })
+                ->lockForUpdate()
+                ->first();
+
+            if ($existingConversation) {
+                return $existingConversation->loadMissing(['participants', 'conversationUsers', 'latestMessage.sender']);
+            }
+
             $conversation = Conversation::create([
                 'type' => 'direct',
                 'title' => null,
@@ -90,6 +104,7 @@ class ChatService
                 'user_id' => $user->id,
                 'role' => 'member',
                 'last_read_at' => now(),
+                'last_delivered_at' => now(),
             ]);
 
             ConversationUser::create([
@@ -97,6 +112,7 @@ class ChatService
                 'user_id' => $recipientId,
                 'role' => 'member',
                 'last_read_at' => null,
+                'last_delivered_at' => null,
             ]);
 
             Log::info('Direct conversation created', [
@@ -562,6 +578,9 @@ class ChatService
             $updateData['is_public'] = (bool) $data['is_public'];
         }
         if ($avatar) {
+            if ($conversation->avatar_path && Storage::disk('public')->exists($conversation->avatar_path)) {
+                Storage::disk('public')->delete($conversation->avatar_path);
+            }
             $updateData['avatar_path'] = $avatar->store('group_avatars', 'public');
         }
 
@@ -767,12 +786,17 @@ class ChatService
     /**
      * Delete message for everyone (WhatsApp style).
      *
-     * // YB - 25-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function deleteMessageForEveryone(User $user, Message $message): Message
     {
         if ($message->sender_id !== $user->id) {
             throw new AccessDeniedHttpException('You can only delete your own messages for everyone.');
+        }
+
+        // Clean up stored attachment file from disk
+        if ($message->attachment_path && Storage::disk('public')->exists($message->attachment_path)) {
+            Storage::disk('public')->delete($message->attachment_path);
         }
 
         $message->update([
@@ -797,10 +821,14 @@ class ChatService
     /**
      * Delete message for current user only.
      *
-     * // YB - 25-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function deleteMessageForMe(User $user, Message $message): Message
     {
+        if (! $message->conversation || ! $message->conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('You are not a participant in this conversation.');
+        }
+
         $deletedFor = $message->deleted_for_user_ids ?? [];
         if (! in_array($user->id, $deletedFor)) {
             $deletedFor[] = $user->id;
