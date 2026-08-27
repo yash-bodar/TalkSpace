@@ -14,6 +14,7 @@ class Message extends Model
 
     protected $fillable = [
         'conversation_id',
+        'reply_to_id',
         'sender_id',
         'body',
         'type',
@@ -26,6 +27,8 @@ class Message extends Model
         'edited_at',
         'is_deleted_for_everyone',
         'deleted_for_user_ids',
+        'is_pinned',
+        'pinned_at',
     ];
 
     protected function casts(): array
@@ -38,6 +41,8 @@ class Message extends Model
             'edited_at' => 'datetime',
             'is_deleted_for_everyone' => 'boolean',
             'deleted_for_user_ids' => 'array',
+            'is_pinned' => 'boolean',
+            'pinned_at' => 'datetime',
             'created_at' => 'datetime',
             'updated_at' => 'datetime',
         ];
@@ -55,6 +60,26 @@ class Message extends Model
     public function conversation(): BelongsTo
     {
         return $this->belongsTo(Conversation::class);
+    }
+
+    /**
+     * Quoted parent message this message is replying to.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function replyTo(): BelongsTo
+    {
+        return $this->belongsTo(Message::class, 'reply_to_id');
+    }
+
+    /**
+     * Emoji reactions on this message.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function reactions(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(MessageReaction::class);
     }
 
     /**

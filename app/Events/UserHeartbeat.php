@@ -3,8 +3,8 @@
 namespace App\Events;
 
 use App\Models\User;
-use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
+use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
@@ -32,13 +32,13 @@ class UserHeartbeat implements ShouldBroadcastNow
     /**
      * Get the channels the event should broadcast on.
      *
-     * // YB - 25-08-2026 code comment
+     * // YB - 27-08-2026 code comment - secure on PrivateChannel
      * @return array<int, \Illuminate\Broadcasting\Channel>
      */
     public function broadcastOn(): array
     {
         return [
-            new Channel('online-heartbeats'),
+            new PrivateChannel('online-heartbeats'),
         ];
     }
 

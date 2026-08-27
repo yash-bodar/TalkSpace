@@ -6,32 +6,20 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class ConversationUser extends Model
+class GroupJoinRequest extends Model
 {
     use HasFactory;
-
-    protected $table = 'conversation_users';
 
     protected $fillable = [
         'conversation_id',
         'user_id',
-        'role',
-        'last_read_at',
-        'last_delivered_at',
+        'status',
     ];
 
-    protected function casts(): array
-    {
-        return [
-            'last_read_at' => 'datetime',
-            'last_delivered_at' => 'datetime',
-        ];
-    }
-
     /**
-     * The conversation associated with this membership.
+     * Group conversation for this request.
      *
-     * // YB - 24-08-2026 code comment
+     * // YB - 26-08-2026 code comment
      */
     public function conversation(): BelongsTo
     {
@@ -39,9 +27,9 @@ class ConversationUser extends Model
     }
 
     /**
-     * The user associated with this membership.
+     * User who requested to join.
      *
-     * // YB - 24-08-2026 code comment
+     * // YB - 26-08-2026 code comment
      */
     public function user(): BelongsTo
     {
