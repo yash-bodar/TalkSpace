@@ -27,6 +27,7 @@ class SendMessageRequest extends FormRequest
         return [
             'body' => ['nullable', 'string', 'max:5000', 'required_without:attachment'],
             'attachment' => ['nullable', 'file', 'max:20480', 'mimes:jpg,jpeg,png,gif,webp,pdf,doc,docx,zip,txt'],
+            'reply_to_id' => ['nullable', 'integer', 'exists:messages,id'],
         ];
     }
 

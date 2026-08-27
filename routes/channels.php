@@ -11,8 +11,12 @@ use Illuminate\Support\Facades\Broadcast;
  */
 Broadcast::channel('chat.{conversationId}', function (User $user, int $conversationId) {
     return Conversation::where('id', $conversationId)
-        ->whereHas('participants', function ($query) use ($user) {
-            $query->where('users.id', $user->id);
+        ->where(function ($query) use ($user) {
+            $query->whereHas('participants', function ($q) use ($user) {
+                $q->where('users.id', $user->id);
+            })->orWhereHas('joinRequests', function ($q) use ($user) {
+                $q->where('user_id', $user->id)->where('status', 'pending');
+            });
         })
         ->exists();
 });

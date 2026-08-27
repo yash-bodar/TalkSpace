@@ -14,7 +14,8 @@ class ConversationPolicy
      */
     public function view(User $user, Conversation $conversation): bool
     {
-        return $conversation->isParticipant($user->id);
+        return $conversation->isParticipant($user->id)
+            || ($conversation->type === 'group' && $conversation->joinRequests()->where('user_id', $user->id)->where('status', 'pending')->exists());
     }
 
     /**

@@ -29,7 +29,21 @@ Route::middleware('auth')->group(function () {
     Route::post('/chat/heartbeat', [ChatController::class, 'heartbeat'])->name('chat.heartbeat');
     Route::patch('/chat/messages/{message}', [ChatController::class, 'updateMessage'])->name('chat.messages.update');
     Route::delete('/chat/messages/{message}', [ChatController::class, 'deleteMessage'])->name('chat.messages.delete');
+    Route::post('/chat/messages/{message}/reactions', [ChatController::class, 'toggleReaction'])->name('chat.messages.reactions.toggle');
+    Route::post('/chat/messages/{message}/pin', [ChatController::class, 'togglePinMessage'])->name('chat.messages.pin.toggle');
+    Route::get('/chat/messages/{message}/info', [ChatController::class, 'getMessageDeliveryInfo'])->name('chat.messages.info');
     Route::get('/chat-users/search', [ChatController::class, 'searchUsers'])->name('chat.users.search');
+
+    // Group Management Routes - YB - 26-08-2026
+    Route::post('/chat/{conversation}/members', [ChatController::class, 'addMembers'])->name('chat.groups.members.add');
+    Route::delete('/chat/{conversation}/members/{user}', [ChatController::class, 'removeMember'])->name('chat.groups.members.remove');
+    Route::patch('/chat/{conversation}/members/{user}/role', [ChatController::class, 'updateMemberRole'])->name('chat.groups.members.role');
+    Route::post('/chat/{conversation}/leave', [ChatController::class, 'leaveGroup'])->name('chat.groups.leave');
+    Route::post('/chat/{conversation}/settings', [ChatController::class, 'updateGroupSettings'])->name('chat.groups.settings');
+    Route::post('/chat/{conversation}/invite-code/reset', [ChatController::class, 'resetInviteCode'])->name('chat.groups.invite.reset');
+    Route::get('/chat/join/{invite_code}', [ChatController::class, 'joinGroup'])->name('chat.join');
+    Route::post('/chat/{conversation}/join-requests/{request}/approve', [ChatController::class, 'approveJoinRequest'])->name('chat.groups.requests.approve');
+    Route::post('/chat/{conversation}/join-requests/{request}/reject', [ChatController::class, 'rejectJoinRequest'])->name('chat.groups.requests.reject');
 
     // Profile Routes
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');

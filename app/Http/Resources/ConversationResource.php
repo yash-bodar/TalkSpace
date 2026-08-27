@@ -24,7 +24,7 @@ class ConversationResource extends JsonResource
 
         $avatar = $this->type === 'direct'
             ? ($directRecipient?->avatar_url ?? null)
-            : 'https://ui-avatars.com/api/?name=' . urlencode($title) . '&background=D91A8D&color=fff&bold=true';
+            : $this->avatar_url;
 
         // Get user's last_read_at timestamp from pivot or relation
         $lastReadAt = null;
@@ -55,14 +55,54 @@ class ConversationResource extends JsonResource
             $latestMsg = $this->messages->last();
         }
 
+        $participantsData = [];
+        if ($this->relationLoaded('participants') && $this->participants) {
+            $participantsData = $this->participants->map(function ($p) use ($request) {
+                $userRes = (new UserResource($p))->resolve($request);
+                $userRes['role'] = $p->pivot?->role ?? 'member';
+
+                $lastRead = $p->pivot?->last_read_at;
+                $userRes['last_read_at'] = $lastRead ? ($lastRead instanceof \Carbon\CarbonInterface ? $lastRead->toISOString() : \Illuminate\Support\Carbon::parse($lastRead)->toISOString()) : null;
+
+                $lastDelivered = $p->pivot?->last_delivered_at;
+                $userRes['last_delivered_at'] = $lastDelivered ? ($lastDelivered instanceof \Carbon\CarbonInterface ? $lastDelivered->toISOString() : \Illuminate\Support\Carbon::parse($lastDelivered)->toISOString()) : null;
+
+                return $userRes;
+            })->values()->all();
+        }
+
+        // Pending join requests for group admins
+        $joinRequests = [];
+        if ($this->type === 'group' && $this->isAdmin($authUserId)) {
+            $this->loadMissing(['joinRequests.user']);
+            $joinRequests = $this->joinRequests->where('status', 'pending')->map(function ($r) use ($request) {
+                return [
+                    'id' => $r->id,
+                    'user' => (new UserResource($r->user))->resolve($request),
+                    'status' => $r->status,
+                    'created_at' => $r->created_at?->toISOString(),
+                ];
+            })->values()->all();
+        }
+
         return [
             'id' => $this->id,
             'type' => $this->type,
             'title' => $title,
+            'description' => $this->description,
             'avatar_url' => $avatar,
-            'direct_recipient' => $directRecipient ? new UserResource($directRecipient) : null,
-            'participants' => UserResource::collection($this->whenLoaded('participants')),
-            'latest_message' => $latestMsg ? new MessageResource($latestMsg) : null,
+            'is_public' => (bool) $this->is_public,
+            'invite_code' => $this->invite_code,
+            'invite_url' => $this->invite_code ? route('chat.join', $this->invite_code) : null,
+            'is_admin' => $this->isAdmin($authUserId),
+            'user_role' => $this->getUserRole($authUserId),
+            'is_member' => $this->isParticipant($authUserId),
+            'has_pending_join_request' => $this->type === 'group' && $this->joinRequests()->where('user_id', $authUserId)->where('status', 'pending')->exists(),
+            'join_requests' => $joinRequests,
+            // YB - 26-08-2026 Resolve nested resources directly to avoid nested { data: ... } object wrapping
+            'direct_recipient' => $directRecipient ? (new UserResource($directRecipient))->resolve($request) : null,
+            'participants' => $participantsData,
+            'latest_message' => $latestMsg ? (new MessageResource($latestMsg))->resolve($request) : null,
             'unread_count' => $unreadCount,
             'last_message_at' => $this->last_message_at?->toISOString(),
             'created_at' => $this->created_at?->toISOString(),

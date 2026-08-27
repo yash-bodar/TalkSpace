@@ -8,6 +8,7 @@ use App\Events\UserTyping;
 use App\Models\Conversation;
 use App\Models\ConversationUser;
 use App\Models\Message;
+use App\Models\MessageReaction;
 use App\Models\User;
 use Exception;
 use Illuminate\Database\Eloquent\Collection;
@@ -43,10 +44,10 @@ class ChatService
      *
      * // YB - 24-08-2026 code comment
      */
-    public function getConversationMessages(Conversation $conversation, int $limit = 50): Collection
+    public function getConversationMessages(Conversation $conversation, int $limit = 100): Collection
     {
         return $conversation->messages()
-            ->with('sender')
+            ->with(['sender', 'replyTo.sender', 'reactions.user'])
             ->orderBy('created_at', 'asc')
             ->take($limit)
             ->get();
@@ -113,12 +114,27 @@ class ChatService
      *
      * // YB - 24-08-2026 code comment
      */
-    public function createGroupConversation(User $creator, string $title, array $participantIds): Conversation
-    {
-        return DB::transaction(function () use ($creator, $title, $participantIds) {
+    public function createGroupConversation(
+        User $creator,
+        string $title,
+        array $participantIds,
+        ?string $description = null,
+        bool $isPublic = false,
+        ?UploadedFile $avatar = null
+    ): Conversation {
+        return DB::transaction(function () use ($creator, $title, $participantIds, $description, $isPublic, $avatar) {
+            $avatarPath = null;
+            if ($avatar) {
+                $avatarPath = $avatar->store('group_avatars', 'public');
+            }
+
             $conversation = Conversation::create([
                 'type' => 'group',
                 'title' => $title,
+                'description' => $description,
+                'avatar_path' => $avatarPath,
+                'is_public' => $isPublic,
+                'invite_code' => Conversation::generateUniqueInviteCode(),
                 'last_message_at' => now(),
             ]);
 
@@ -128,6 +144,7 @@ class ChatService
                 'user_id' => $creator->id,
                 'role' => 'admin',
                 'last_read_at' => now(),
+                'last_delivered_at' => now(),
             ]);
 
             // Add all other members
@@ -138,8 +155,17 @@ class ChatService
                     'user_id' => $participantId,
                     'role' => 'member',
                     'last_read_at' => null,
+                    'last_delivered_at' => null,
                 ]);
             }
+
+            // Create initial system message announcing group creation
+            Message::create([
+                'conversation_id' => $conversation->id,
+                'sender_id' => $creator->id,
+                'body' => "{$creator->name} created group \"{$title}\"",
+                'type' => 'system',
+            ]);
 
             Log::info('Group conversation created', [
                 'conversation_id' => $conversation->id,
@@ -183,6 +209,7 @@ class ChatService
 
             $message = Message::create([
                 'conversation_id' => $conversation->id,
+                'reply_to_id' => $data['reply_to_id'] ?? null,
                 'sender_id' => $sender->id,
                 'body' => $data['body'] ?? null,
                 'type' => $type,
@@ -199,11 +226,11 @@ class ChatService
                 ->where('user_id', $sender->id)
                 ->update(['last_read_at' => now()]);
 
-            $message->load(['sender', 'conversation.participants']);
+            $message->load(['sender', 'replyTo.sender', 'reactions.user', 'conversation.participants', 'conversation.conversationUsers']);
 
-            // Broadcast real-time event
+            // Broadcast real-time event to all participants - YB - 26-08-2026
             try {
-                broadcast(new MessageSent($message))->toOthers();
+                broadcast(new MessageSent($message));
             } catch (\Throwable $e) {
                 Log::warning('Broadcast MessageSent failed: ' . $e->getMessage());
             }
@@ -223,13 +250,18 @@ class ChatService
 
         ConversationUser::where('conversation_id', $conversation->id)
             ->where('user_id', $user->id)
-            ->update(['last_read_at' => $now]);
+            ->update([
+                'last_read_at' => $now,
+                'last_delivered_at' => $now,
+            ]);
 
-        // Also update message read_at timestamp in database
-        Message::where('conversation_id', $conversation->id)
-            ->where('sender_id', '!=', $user->id)
-            ->whereNull('read_at')
-            ->update(['read_at' => $now, 'delivered_at' => $now]);
+        // Also update message read_at timestamp in database for direct chats
+        if ($conversation->type === 'direct') {
+            Message::where('conversation_id', $conversation->id)
+                ->where('sender_id', '!=', $user->id)
+                ->whereNull('read_at')
+                ->update(['read_at' => $now, 'delivered_at' => $now]);
+        }
 
         try {
             broadcast(new MessageRead($conversation->id, $user, $now))->toOthers();
@@ -247,16 +279,457 @@ class ChatService
     {
         $now = now();
 
-        Message::where('conversation_id', $conversation->id)
-            ->where('sender_id', '!=', $user->id)
-            ->whereNull('delivered_at')
-            ->update(['delivered_at' => $now]);
+        ConversationUser::where('conversation_id', $conversation->id)
+            ->where('user_id', $user->id)
+            ->update(['last_delivered_at' => $now]);
+
+        if ($conversation->type === 'direct') {
+            Message::where('conversation_id', $conversation->id)
+                ->where('sender_id', '!=', $user->id)
+                ->whereNull('delivered_at')
+                ->update(['delivered_at' => $now]);
+        }
 
         try {
             broadcast(new \App\Events\MessageDelivered($conversation->id, $user, $now))->toOthers();
         } catch (\Throwable $e) {
             Log::warning('Broadcast MessageDelivered failed: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Synchronize and catch up delivery receipts across all conversations when user connects or sends heartbeat.
+     *
+     * // YB - 27-08-2026 code comment
+     */
+    public function syncDeliveredMessagesForUser(User $user): int
+    {
+        $now = now();
+        $updatedConversationIds = [];
+
+        // 1. Find all user's participant records
+        $conversationUsers = ConversationUser::where('user_id', $user->id)->get();
+
+        foreach ($conversationUsers as $cu) {
+            $convId = $cu->conversation_id;
+
+            // Check if there are messages from other senders that arrived after last_delivered_at
+            $hasUndelivered = Message::where('conversation_id', $convId)
+                ->where('sender_id', '!=', $user->id)
+                ->when($cu->last_delivered_at, function ($q) use ($cu) {
+                    $q->where('created_at', '>', $cu->last_delivered_at);
+                })
+                ->exists();
+
+            if ($hasUndelivered || is_null($cu->last_delivered_at)) {
+                $cu->update(['last_delivered_at' => $now]);
+                $updatedConversationIds[] = $convId;
+            }
+        }
+
+        // 2. Mark direct messages where this user is recipient as delivered
+        Message::whereNull('delivered_at')
+            ->where('sender_id', '!=', $user->id)
+            ->whereIn('conversation_id', function ($query) use ($user) {
+                $query->select('c.id')
+                    ->from('conversations as c')
+                    ->join('conversation_users as cu', 'cu.conversation_id', '=', 'c.id')
+                    ->where('c.type', 'direct')
+                    ->where('cu.user_id', $user->id);
+            })
+            ->update(['delivered_at' => $now]);
+
+        // 3. Broadcast MessageDelivered event to notify senders in real-time
+        foreach (array_unique($updatedConversationIds) as $conversationId) {
+            try {
+                broadcast(new \App\Events\MessageDelivered($conversationId, $user, $now))->toOthers();
+            } catch (\Throwable $e) {
+                Log::warning("Broadcast MessageDelivered failed for conv {$conversationId}: " . $e->getMessage());
+            }
+        }
+
+        return count($updatedConversationIds);
+    }
+
+    /**
+     * Promote or demote a group member's role.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function updateParticipantRole(Conversation $conversation, User $admin, int $targetUserId, string $role): void
+    {
+        if (! $conversation->isAdmin($admin->id)) {
+            throw new AccessDeniedHttpException('Only group admins can change member roles.');
+        }
+
+        if (! in_array($role, ['admin', 'member'])) {
+            throw new \InvalidArgumentException('Invalid role specified.');
+        }
+
+        $targetPivot = ConversationUser::where('conversation_id', $conversation->id)
+            ->where('user_id', $targetUserId)
+            ->first();
+
+        if (! $targetPivot) {
+            throw new \InvalidArgumentException('User is not a participant of this group.');
+        }
+
+        // If demoting from admin to member, make sure at least one other admin remains
+        if ($targetPivot->role === 'admin' && $role === 'member') {
+            $adminCount = ConversationUser::where('conversation_id', $conversation->id)
+                ->where('role', 'admin')
+                ->count();
+            if ($adminCount <= 1) {
+                throw new \InvalidArgumentException('The group must have at least one administrator.');
+            }
+        }
+
+        $targetPivot->update(['role' => $role]);
+        $targetUser = User::find($targetUserId);
+
+        $roleText = $role === 'admin' ? 'an admin' : 'a member';
+        $message = Message::create([
+            'conversation_id' => $conversation->id,
+            'sender_id' => $admin->id,
+            'body' => "{$admin->name} changed {$targetUser->name}'s role to {$roleText}",
+            'type' => 'system',
+        ]);
+        $conversation->update(['last_message_at' => $message->created_at]);
+
+        try {
+            broadcast(new \App\Events\GroupRoleUpdated($conversation, $targetUserId, $role));
+            broadcast(new MessageSent($message));
+        } catch (\Throwable $e) {
+            Log::warning('Broadcast GroupRoleUpdated failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Remove a member from group.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function removeParticipant(Conversation $conversation, User $admin, int $targetUserId): void
+    {
+        if (! $conversation->isAdmin($admin->id)) {
+            throw new AccessDeniedHttpException('Only group admins can remove members.');
+        }
+
+        $targetUser = User::findOrFail($targetUserId);
+
+        ConversationUser::where('conversation_id', $conversation->id)
+            ->where('user_id', $targetUserId)
+            ->delete();
+
+        $message = Message::create([
+            'conversation_id' => $conversation->id,
+            'sender_id' => $admin->id,
+            'body' => "{$admin->name} removed {$targetUser->name} from the group",
+            'type' => 'system',
+        ]);
+        $conversation->update(['last_message_at' => $message->created_at]);
+
+        try {
+            broadcast(new \App\Events\GroupMemberRemoved($conversation, $targetUserId));
+            broadcast(new MessageSent($message));
+        } catch (\Throwable $e) {
+            Log::warning('Broadcast GroupMemberRemoved failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Add new participants to group.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function addParticipants(Conversation $conversation, User $admin, array $userIds): void
+    {
+        if (! $conversation->isAdmin($admin->id)) {
+            throw new AccessDeniedHttpException('Only group admins can add new members.');
+        }
+
+        $existingIds = $conversation->participants()->pluck('users.id')->all();
+        $toAdd = array_diff($userIds, $existingIds);
+
+        if (empty($toAdd)) {
+            return;
+        }
+
+        $addedUsers = User::whereIn('id', $toAdd)->get();
+        foreach ($addedUsers as $u) {
+            ConversationUser::create([
+                'conversation_id' => $conversation->id,
+                'user_id' => $u->id,
+                'role' => 'member',
+                'last_read_at' => null,
+                'last_delivered_at' => null,
+            ]);
+
+            $message = Message::create([
+                'conversation_id' => $conversation->id,
+                'sender_id' => $admin->id,
+                'body' => "{$admin->name} added {$u->name} to the group",
+                'type' => 'system',
+            ]);
+            $conversation->update(['last_message_at' => $message->created_at]);
+
+            try {
+                broadcast(new \App\Events\GroupMemberJoined($conversation, $u));
+                broadcast(new MessageSent($message));
+            } catch (\Throwable $e) {
+                Log::warning('Broadcast GroupMemberJoined failed: ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Leave group chat.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function leaveGroup(Conversation $conversation, User $user): void
+    {
+        if (! $conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('User is not a participant in this group.');
+        }
+
+        $wasAdmin = $conversation->isAdmin($user->id);
+
+        ConversationUser::where('conversation_id', $conversation->id)
+            ->where('user_id', $user->id)
+            ->delete();
+
+        // If leaving user was admin and no admins remain, promote oldest participant to admin
+        if ($wasAdmin) {
+            $hasAdmin = ConversationUser::where('conversation_id', $conversation->id)
+                ->where('role', 'admin')
+                ->exists();
+
+            if (! $hasAdmin) {
+                $oldestMember = ConversationUser::where('conversation_id', $conversation->id)
+                    ->orderBy('created_at', 'asc')
+                    ->first();
+
+                if ($oldestMember) {
+                    $oldestMember->update(['role' => 'admin']);
+                    $promotedUser = User::find($oldestMember->user_id);
+                    if ($promotedUser) {
+                        try {
+                            broadcast(new \App\Events\GroupRoleUpdated($conversation, $promotedUser->id, 'admin'));
+                        } catch (\Throwable $e) {
+                            Log::warning('Broadcast auto-promoted GroupRoleUpdated failed: ' . $e->getMessage());
+                        }
+                    }
+                }
+            }
+        }
+
+        $message = Message::create([
+            'conversation_id' => $conversation->id,
+            'sender_id' => $user->id,
+            'body' => "{$user->name} left the group",
+            'type' => 'system',
+        ]);
+        $conversation->update(['last_message_at' => $message->created_at]);
+
+        try {
+            broadcast(new \App\Events\GroupMemberRemoved($conversation, $user->id));
+            broadcast(new MessageSent($message));
+        } catch (\Throwable $e) {
+            Log::warning('Broadcast leave MessageSent failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Update group profile (title, description, is_public, avatar).
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function updateGroupProfile(Conversation $conversation, User $admin, array $data, ?UploadedFile $avatar = null): Conversation
+    {
+        if (! $conversation->isAdmin($admin->id)) {
+            throw new AccessDeniedHttpException('Only group admins can update group settings.');
+        }
+
+        $updateData = [];
+        if (isset($data['title']) && trim($data['title'])) {
+            $updateData['title'] = trim($data['title']);
+        }
+        if (array_key_exists('description', $data)) {
+            $updateData['description'] = $data['description'];
+        }
+        if (array_key_exists('is_public', $data)) {
+            $updateData['is_public'] = (bool) $data['is_public'];
+        }
+        if ($avatar) {
+            $updateData['avatar_path'] = $avatar->store('group_avatars', 'public');
+        }
+
+        if (! empty($updateData)) {
+            $conversation->update($updateData);
+
+            $message = Message::create([
+                'conversation_id' => $conversation->id,
+                'sender_id' => $admin->id,
+                'body' => "{$admin->name} updated the group settings",
+                'type' => 'system',
+            ]);
+            $conversation->update(['last_message_at' => $message->created_at]);
+
+            try {
+                broadcast(new \App\Events\GroupUpdated($conversation));
+                broadcast(new MessageSent($message));
+            } catch (\Throwable $e) {
+                Log::warning('Broadcast GroupUpdated failed: ' . $e->getMessage());
+            }
+        }
+
+        return $conversation->load(['participants', 'conversationUsers']);
+    }
+
+    /**
+     * Reset group invite code.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function resetInviteCode(Conversation $conversation, User $admin): string
+    {
+        if (! $conversation->isAdmin($admin->id)) {
+            throw new AccessDeniedHttpException('Only group admins can reset the invite link.');
+        }
+
+        $newCode = Conversation::generateUniqueInviteCode();
+        $conversation->update(['invite_code' => $newCode]);
+
+        try {
+            broadcast(new \App\Events\GroupUpdated($conversation));
+        } catch (\Throwable $e) {
+            Log::warning('Broadcast resetInviteCode GroupUpdated failed: ' . $e->getMessage());
+        }
+
+        return $newCode;
+    }
+
+    /**
+     * Join group via invite code (Direct join for public groups, Join Request for private).
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function joinViaInviteCode(string $inviteCode, User $user): array
+    {
+        $conversation = Conversation::where('type', 'group')
+            ->where('invite_code', $inviteCode)
+            ->firstOrFail();
+
+        // If user is already a member
+        if ($conversation->isParticipant($user->id)) {
+            return ['status' => 'already_member', 'conversation' => $conversation];
+        }
+
+        if ($conversation->is_public) {
+            ConversationUser::create([
+                'conversation_id' => $conversation->id,
+                'user_id' => $user->id,
+                'role' => 'member',
+                'last_read_at' => now(),
+                'last_delivered_at' => now(),
+            ]);
+
+            $message = Message::create([
+                'conversation_id' => $conversation->id,
+                'sender_id' => $user->id,
+                'body' => "{$user->name} joined via group link",
+                'type' => 'system',
+            ]);
+            $conversation->update(['last_message_at' => $message->created_at]);
+
+            try {
+                broadcast(new \App\Events\GroupMemberJoined($conversation, $user));
+                broadcast(new MessageSent($message));
+            } catch (\Throwable $e) {
+                Log::warning('Broadcast joinViaInviteCode failed: ' . $e->getMessage());
+            }
+
+            return ['status' => 'joined', 'conversation' => $conversation];
+        }
+
+        // Private group: Create or find pending join request
+        $request = \App\Models\GroupJoinRequest::firstOrCreate(
+            ['conversation_id' => $conversation->id, 'user_id' => $user->id],
+            ['status' => 'pending']
+        );
+
+        if ($request->status === 'approved') {
+            return ['status' => 'already_member', 'conversation' => $conversation];
+        }
+
+        if ($request->status === 'rejected') {
+            $request->update(['status' => 'pending']);
+        }
+
+        return ['status' => 'requested', 'conversation' => $conversation];
+    }
+
+    /**
+     * Approve join request for private group.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function approveJoinRequest(Conversation $conversation, User $admin, int $requestId): void
+    {
+        if (! $conversation->isAdmin($admin->id)) {
+            throw new AccessDeniedHttpException('Only group admins can approve join requests.');
+        }
+
+        $joinRequest = \App\Models\GroupJoinRequest::where('conversation_id', $conversation->id)
+            ->where('id', $requestId)
+            ->firstOrFail();
+
+        $targetUser = $joinRequest->user;
+        $joinRequest->update(['status' => 'approved']);
+
+        if (! $conversation->isParticipant($targetUser->id)) {
+            ConversationUser::create([
+                'conversation_id' => $conversation->id,
+                'user_id' => $targetUser->id,
+                'role' => 'member',
+                'last_read_at' => now(),
+                'last_delivered_at' => now(),
+            ]);
+
+            $message = Message::create([
+                'conversation_id' => $conversation->id,
+                'sender_id' => $admin->id,
+                'body' => "{$admin->name} approved {$targetUser->name}'s request to join",
+                'type' => 'system',
+            ]);
+            $conversation->update(['last_message_at' => $message->created_at]);
+
+            try {
+                broadcast(new \App\Events\GroupMemberJoined($conversation, $targetUser));
+                broadcast(new MessageSent($message));
+            } catch (\Throwable $e) {
+                Log::warning('Broadcast approveJoinRequest failed: ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Reject join request for private group.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function rejectJoinRequest(Conversation $conversation, User $admin, int $requestId): void
+    {
+        if (! $conversation->isAdmin($admin->id)) {
+            throw new AccessDeniedHttpException('Only group admins can reject join requests.');
+        }
+
+        $joinRequest = \App\Models\GroupJoinRequest::where('conversation_id', $conversation->id)
+            ->where('id', $requestId)
+            ->firstOrFail();
+
+        $joinRequest->update(['status' => 'rejected']);
     }
 
     /**
@@ -440,5 +913,174 @@ class ChatService
             ->orderBy('name')
             ->take($limit)
             ->get();
+    }
+
+    /**
+     * Toggle an emoji reaction on a message.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function toggleReaction(Message $message, User $user, string $emoji): array
+    {
+        $conversation = $message->conversation;
+        if (! $conversation || ! $conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('You cannot react to messages in this conversation.');
+        }
+
+        $existing = MessageReaction::where('message_id', $message->id)
+            ->where('user_id', $user->id)
+            ->where('emoji', $emoji)
+            ->first();
+
+        $action = 'added';
+        if ($existing) {
+            $existing->delete();
+            $action = 'removed';
+        } else {
+            MessageReaction::create([
+                'message_id' => $message->id,
+                'user_id' => $user->id,
+                'emoji' => $emoji,
+            ]);
+        }
+
+        // Fetch fresh reactions
+        $message->load(['reactions.user']);
+        $grouped = $message->reactions->groupBy('emoji');
+        $reactionsData = [];
+        foreach ($grouped as $em => $items) {
+            $reactionsData[] = [
+                'emoji' => $em,
+                'count' => $items->count(),
+                'user_ids' => $items->pluck('user_id')->all(),
+                'users' => $items->map(fn($r) => ['id' => $r->user_id, 'name' => $r->user?->name ?? 'User'])->values()->all(),
+                'has_reacted' => $items->contains('user_id', $user->id),
+            ];
+        }
+
+        try {
+            broadcast(new \App\Events\MessageReactionToggled($message, $user, $emoji, $action, $reactionsData));
+        } catch (\Throwable $e) {
+            Log::warning('Broadcast MessageReactionToggled failed: ' . $e->getMessage());
+        }
+
+        return $reactionsData;
+    }
+
+    /**
+     * Toggle pinned status of a message.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function togglePinMessage(Message $message, User $user): Message
+    {
+        $conversation = $message->conversation;
+        if (! $conversation || ! $conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('You cannot pin messages in this conversation.');
+        }
+
+        $isPinned = ! $message->is_pinned;
+        $message->update([
+            'is_pinned' => $isPinned,
+            'pinned_at' => $isPinned ? now() : null,
+        ]);
+
+        $message->load(['sender', 'replyTo.sender', 'reactions.user', 'conversation']);
+
+        try {
+            broadcast(new \App\Events\MessagePinnedToggled($message, $user));
+        } catch (\Throwable $e) {
+            Log::warning('Broadcast MessagePinnedToggled failed: ' . $e->getMessage());
+        }
+
+        return $message;
+    }
+
+    /**
+     * Get detailed read and delivery status per participant for a message.
+     *
+     * // YB - 26-08-2026 code comment
+     */
+    public function getMessageDeliveryInfo(Message $message, User $user): array
+    {
+        $conversation = $message->conversation;
+        if (! $conversation || ! $conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('You cannot view message info for this conversation.');
+        }
+
+        $conversation->loadMissing(['participants', 'conversationUsers.user']);
+
+        $participants = $conversation->participants->where('id', '!=', $message->sender_id);
+        $conversationUsers = $conversation->conversationUsers->where('user_id', '!=', $message->sender_id);
+
+        $readList = [];
+        $deliveredList = [];
+
+        $msgCreatedAt = $message->created_at;
+
+        foreach ($participants as $participant) {
+            $cu = $conversationUsers->firstWhere('user_id', $participant->id);
+            $lastRead = $cu?->last_read_at;
+            $lastDeliv = $cu?->last_delivered_at;
+
+            $hasRead = $lastRead && $lastRead >= $msgCreatedAt;
+            $hasDelivered = ($lastDeliv && $lastDeliv >= $msgCreatedAt) || $hasRead;
+
+            if ($hasRead) {
+                $readList[] = [
+                    'user' => (new \App\Http\Resources\UserResource($participant))->resolve(request()),
+                    'timestamp' => $lastRead->toISOString(),
+                    'human_time' => $lastRead->diffForHumans(),
+                ];
+            } elseif ($hasDelivered) {
+                $deliveredList[] = [
+                    'user' => (new \App\Http\Resources\UserResource($participant))->resolve(request()),
+                    'timestamp' => $lastDeliv ? $lastDeliv->toISOString() : $msgCreatedAt->toISOString(),
+                    'human_time' => $lastDeliv ? $lastDeliv->diffForHumans() : 'Recently',
+                ];
+            }
+        }
+
+        $directRecipient = null;
+        $directReadAt = null;
+        $directDeliveredAt = null;
+
+        if ($conversation->type === 'direct') {
+            $otherParticipant = $participants->first();
+            $cu = $conversationUsers->first();
+            $directRecipient = $otherParticipant ? (new \App\Http\Resources\UserResource($otherParticipant))->resolve(request()) : null;
+
+            $readTimestamp = $message->read_at ?? ($cu?->last_read_at && $cu->last_read_at >= $msgCreatedAt ? $cu->last_read_at : null);
+            $delivTimestamp = $message->delivered_at ?? ($cu?->last_delivered_at && $cu->last_delivered_at >= $msgCreatedAt ? $cu->last_delivered_at : null);
+
+            $directReadAt = $readTimestamp ? [
+                'timestamp' => $readTimestamp->toISOString(),
+                'formatted' => $readTimestamp->format('M j, Y \a\t g:i A'),
+                'human_time' => $readTimestamp->diffForHumans(),
+            ] : null;
+
+            $directDeliveredAt = ($delivTimestamp || $readTimestamp) ? [
+                'timestamp' => ($delivTimestamp ?? $readTimestamp)->toISOString(),
+                'formatted' => ($delivTimestamp ?? $readTimestamp)->format('M j, Y \a\t g:i A'),
+                'human_time' => ($delivTimestamp ?? $readTimestamp)->diffForHumans(),
+            ] : null;
+        }
+
+        return [
+            'message_id' => $message->id,
+            'is_direct' => $conversation->type === 'direct',
+            'body' => $message->body,
+            'type' => $message->type,
+            'attachment_name' => $message->attachment_name,
+            'created_at' => $message->created_at?->toISOString(),
+            'created_at_formatted' => $message->created_at?->format('M j, Y \a\t g:i A'),
+            'created_at_human' => $message->created_at?->diffForHumans(),
+            'direct_recipient' => $directRecipient,
+            'direct_read_at' => $directReadAt,
+            'direct_delivered_at' => $directDeliveredAt,
+            'read_by' => $readList,
+            'delivered_to' => $deliveredList,
+            'total_participants' => $participants->count(),
+        ];
     }
 }
