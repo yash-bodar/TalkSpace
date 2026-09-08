@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue';
 import { Head, usePage, router } from '@inertiajs/vue3';
 import AuthenticatedLayout from '@/Layouts/AuthenticatedLayout.vue';
 import { 
@@ -59,10 +59,12 @@ import {
 } from 'lucide-vue-next';
 import { format, formatDistanceToNow, isToday, isYesterday, parseISO } from 'date-fns';
 import { confirmDialog, showSuccess, showError, showToast } from '@/Utils/alert';
-import EmojiPicker from '@/Components/EmojiPicker.vue';
 import AppleEmoji from '@/Components/AppleEmoji.vue';
 import AppleChatInput from '@/Components/AppleChatInput.vue';
 import { renderAppleEmojisHtml, isOnlyEmojis } from '@/Utils/emoji';
+
+// YB - 08-09-2026 - Async on-demand loading of heavy EmojiPicker bundle
+const EmojiPicker = defineAsyncComponent(() => import('@/Components/EmojiPicker.vue'));
 
 const props = defineProps({
     conversations: {
@@ -1071,9 +1073,6 @@ const getLatestMessagePreview = (conv) => {
     if (msg.is_deleted_for_everyone) {
         return '🚫 This message was deleted';
     }
-    if (msg.deleted_for_user_ids && currentUser.value && msg.deleted_for_user_ids.includes(currentUser.value.id)) {
-        return '🚫 You deleted this message';
-    }
     if (msg.body && msg.body.trim()) {
         return msg.body;
     }
@@ -1234,6 +1233,7 @@ const closeDeleteModal = () => {
     isDeleteModalOpen.value = false;
 };
 
+// YB - 08-09-2026 - Execute message deletion with sidebar preview fallback for deleted-for-me
 const executeDeleteMessage = async (type = 'me') => {
     if (!deleteConfirmMessage.value) return;
     const msgId = deleteConfirmMessage.value.id;
@@ -1250,9 +1250,23 @@ const executeDeleteMessage = async (type = 'me') => {
             if (idx !== -1) {
                 messageList.value[idx] = updated;
             }
+            if (props.activeConversation) {
+                updateConversationLatestMessage(props.activeConversation.id, updated);
+            }
         } else {
             // Delete for me: remove from local state immediately
             messageList.value = messageList.value.filter(m => m.id !== msgId);
+
+            // Find the latest remaining message in this conversation not deleted for me
+            if (props.activeConversation) {
+                const remaining = messageList.value.filter(m => {
+                    if (m.is_deleted_for_everyone) return true;
+                    const df = m.deleted_for_user_ids || [];
+                    return !df.includes(currentUser.value?.id);
+                });
+                const prevMsg = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+                updateConversationLatestMessage(props.activeConversation.id, prevMsg);
+            }
         }
 
         closeDeleteModal();
@@ -1262,14 +1276,19 @@ const executeDeleteMessage = async (type = 'me') => {
 };
 
 // Update conversation in sidebar
+// YB - 08-09-2026 code comment
 const updateConversationLatestMessage = (convId, msg) => {
-    const idx = localConversations.value.findIndex(c => c.id === convId);
+    const idx = localConversations.value.findIndex(c => Number(c.id) === Number(convId));
     if (idx !== -1) {
         const conv = { ...localConversations.value[idx] };
         conv.latest_message = msg;
-        conv.last_message_at = msg.created_at;
-        localConversations.value.splice(idx, 1);
-        localConversations.value.unshift(conv);
+        if (msg?.created_at) {
+            conv.last_message_at = msg.created_at;
+            localConversations.value.splice(idx, 1);
+            localConversations.value.unshift(conv);
+        } else {
+            localConversations.value[idx] = conv;
+        }
     }
 };
 
@@ -1921,9 +1940,9 @@ onUnmounted(() => {
 
                             <div class="flex items-center justify-between">
                                 <p class="text-xs text-slate-500 truncate pr-2 flex items-center gap-1">
-                                    <span v-if="conv.latest_message?.type !== 'system' && conv.latest_message?.sender_id === currentUser?.id" class="text-brand-600 font-bold">You: </span>
-                                    <span v-else-if="conv.latest_message?.type !== 'system' && conv.type === 'group' && conv.latest_message" class="text-slate-700 font-semibold">{{ conv.latest_message.sender?.name?.split(' ')[0] }}: </span>
-                                    <span class="truncate" v-html="renderAppleEmojisHtml(conv.latest_message?.body || (conv.latest_message?.attachment_name ? '📎 Attachment' : 'No messages yet'))"></span>
+                                    <span v-if="conv.latest_message && conv.latest_message.type !== 'system' && conv.latest_message.sender_id === currentUser?.id" class="text-brand-600 font-bold">You: </span>
+                                    <span v-else-if="conv.latest_message && conv.latest_message.type !== 'system' && conv.type === 'group' && conv.latest_message.sender?.name" class="text-slate-700 font-semibold">{{ conv.latest_message.sender?.name?.split(' ')[0] }}: </span>
+                                    <span class="truncate" v-html="renderAppleEmojisHtml(getLatestMessagePreview(conv))"></span>
                                 </p>
 
                                 <div class="flex items-center space-x-1.5 flex-shrink-0">
@@ -2628,47 +2647,34 @@ onUnmounted(() => {
                         </button>
                     </div>
 
-                    <!-- Active Edit Banner (WhatsApp Style) -->
-                    <div 
-                        v-if="editingMessage" 
-                        class="mb-2.5 px-3.5 py-2 bg-brand-50/80 rounded-xl border border-brand-200 flex items-center justify-between text-xs animate-in fade-in"
-                    >
-                        <div class="flex items-center space-x-2.5 truncate">
-                            <Edit3 class="w-4 h-4 text-brand-600 flex-shrink-0" />
-                            <div class="truncate">
-                                <span class="text-brand-700 font-bold">Edit Message:</span>
-                                <span class="text-slate-600 ml-1.5 truncate" v-html="renderAppleEmojisHtml(editingMessage.body)"></span>
+                    <!-- Form when editing (with Apple iOS Emojis) - YB - 08-09-2026 -->
+                    <form v-if="editingMessage" @submit.prevent="saveEditMessage" class="flex items-end space-x-1.5 sm:space-x-2.5 relative">
+                        <!-- Apple iOS Emoji Picker Button for Edit Mode -->
+                        <div class="relative flex-shrink-0">
+                            <button 
+                                type="button" 
+                                @click.stop="isComposerEmojiPickerOpen = !isComposerEmojiPickerOpen"
+                                class="p-2.5 sm:p-3 text-slate-500 hover:text-brand-600 hover:bg-brand-50 rounded-2xl transition-all flex-shrink-0 border border-slate-200 bg-slate-50 shadow-xs"
+                                :class="isComposerEmojiPickerOpen ? 'text-brand-600 bg-brand-50 border-brand-300 ring-2 ring-brand-500/20' : ''"
+                                title="Insert Apple iOS Emoji"
+                            >
+                                <Smile class="w-4 h-4 sm:w-5 sm:h-5" />
+                            </button>
+
+                            <!-- Apple iOS Emoji Popover above input -->
+                            <div 
+                                v-if="isComposerEmojiPickerOpen" 
+                                class="absolute bottom-full mb-3 left-0 -ml-12 sm:ml-0 z-50 animate-in fade-in zoom-in-95 shadow-2xl max-w-[calc(100vw-1.5rem)]"
+                                @click.stop
+                            >
+                                <EmojiPicker 
+                                    :is-open="true" 
+                                    @select="handleComposerEmojiSelect" 
+                                    @close="isComposerEmojiPickerOpen = false" 
+                                />
                             </div>
                         </div>
-                        <button 
-                            @click="cancelEditMessage" 
-                            class="p-1 hover:bg-brand-100 text-slate-500 hover:text-slate-800 rounded-lg transition"
-                            title="Cancel editing"
-                        >
-                            <X class="w-4 h-4" />
-                        </button>
-                    </div>
 
-                    <!-- Attachment Preview Banner -->
-                    <div 
-                        v-if="selectedFile" 
-                        class="mb-2.5 px-3.5 py-2.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between text-xs animate-in fade-in"
-                    >
-                        <div class="flex items-center space-x-2.5 truncate">
-                            <Paperclip class="w-4 h-4 text-brand-600 flex-shrink-0" />
-                            <span class="text-slate-800 truncate font-semibold">{{ selectedFile.name }}</span>
-                            <span class="text-slate-500 text-[10px]">({{ (selectedFile.size / 1024).toFixed(1) }} KB)</span>
-                        </div>
-                        <button 
-                            @click="clearSelectedFile" 
-                            class="p-1 hover:bg-slate-200 text-slate-400 hover:text-slate-700 rounded-lg transition"
-                        >
-                            <X class="w-4 h-4" />
-                        </button>
-                    </div>
-
-                    <!-- Form when editing (with Apple iOS Emojis) -->
-                    <form v-if="editingMessage" @submit.prevent="saveEditMessage" class="flex items-end space-x-1.5 sm:space-x-2.5">
                         <div class="flex-1 relative min-w-0">
                             <AppleChatInput 
                                 ref="editInputRef"
@@ -2681,7 +2687,7 @@ onUnmounted(() => {
                         <button 
                             type="button" 
                             @click="cancelEditMessage"
-                            class="px-2.5 sm:px-3.5 py-2.5 sm:py-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-2xl border border-slate-200 flex-shrink-0"
+                            class="px-2.5 sm:px-3.5 py-2.5 sm:py-3 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-2xl border border-slate-200 flex-shrink-0 transition"
                         >
                             Cancel
                         </button>
