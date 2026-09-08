@@ -17,7 +17,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('message_id')->constrained('messages')->cascadeOnDelete();
             $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();
-            $table->string('emoji', 32);
+            $table->string('emoji', 64)->collation('utf8mb4_bin');
             $table->timestamps();
 
             $table->unique(['message_id', 'user_id', 'emoji']);
