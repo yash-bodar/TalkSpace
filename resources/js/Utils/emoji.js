@@ -1,45 +1,20 @@
-import appleEmojiData from '@emoji-mart/data/sets/15/apple.json';
-
-// Build instant lookup map for all 6,700+ Apple emoji variants & skin tones - YB - 26-08-2026
-const EMOJI_TO_UNIFIED = new Map();
-
-for (const k in appleEmojiData.emojis) {
-    const entry = appleEmojiData.emojis[k];
-    if (entry && entry.skins) {
-        for (const s of entry.skins) {
-            if (s.native && s.unified) {
-                EMOJI_TO_UNIFIED.set(s.native, s.unified);
-                if (s.native.endsWith('\ufe0f')) {
-                    EMOJI_TO_UNIFIED.set(s.native.slice(0, -1), s.unified);
-                } else {
-                    EMOJI_TO_UNIFIED.set(s.native + '\ufe0f', s.unified);
-                }
-            }
-        }
-    }
-}
-
-// Robust Unicode Emoji Regex capturing all skin tones, hair variants, variation selectors, ZWJ sequences, and flags - YB - 26-08-2026
+// Robust Unicode Emoji Regex capturing all skin tones, hair variants, variation selectors, ZWJ sequences, and flags - YB - 08-09-2026
 const EMOJI_REGEX = /(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}(?:\uFE0F|\uFE0E|[\u{1F3FB}-\u{1F3FF}]|[\u{1F9B0}-\u{1F9B3}]|[\u{E0020}-\u{E007F}])*(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E|[\u{1F3FB}-\u{1F3FF}]|[\u{1F9B0}-\u{1F9B3}]|[\u{E0020}-\u{E007F}])*)*)/gu;
 
 /**
  * Convert any emoji character to hex code matching Apple's datasource
+ * 
+ * // YB - 08-09-2026 code comment
  */
 export const getEmojiUnified = (emoji) => {
     if (!emoji) return '';
-    if (EMOJI_TO_UNIFIED.has(emoji)) return EMOJI_TO_UNIFIED.get(emoji);
-
-    const clean = emoji.replace(/[\uFE0E\uFE0F]/g, '');
-    if (EMOJI_TO_UNIFIED.has(clean)) return EMOJI_TO_UNIFIED.get(clean);
-
+    const clean = emoji.replace(/[\uFE0E]/g, '');
     const codePoints = [];
-    for (let i = 0; i < emoji.length; i++) {
-        const codePoint = emoji.codePointAt(i);
+    for (let i = 0; i < clean.length; i++) {
+        const codePoint = clean.codePointAt(i);
         if (codePoint !== undefined) {
-            // Skip variation selector 16 when building fallback
-            if (codePoint !== 0xfe0f && codePoint !== 0xfe0e) {
-                codePoints.push(codePoint.toString(16).toLowerCase());
-            }
+            const hex = codePoint.toString(16).toLowerCase();
+            codePoints.push(hex.length < 4 ? hex.padStart(4, '0') : hex);
             if (codePoint > 0xffff) {
                 i++;
             }
@@ -51,7 +26,7 @@ export const getEmojiUnified = (emoji) => {
 /**
  * Return the Apple iOS 3D emoji CDN image URL
  * 
- * // YB - 26-08-2026 code comment
+ * // YB - 08-09-2026 code comment
  */
 export const getAppleEmojiUrl = (emoji) => {
     const unified = getEmojiUnified(emoji);

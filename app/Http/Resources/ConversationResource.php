@@ -61,6 +61,36 @@ class ConversationResource extends JsonResource
             $latestMsg = $this->messages->last();
         }
 
+        // YB - 08-09-2026 - If the latest message was deleted for me only, show the latest visible message before it. If deleted for everyone, keep showing deleted for everyone.
+        if ($latestMsg && $authUserId && ! $latestMsg->is_deleted_for_everyone) {
+            $deletedFor = $latestMsg->deleted_for_user_ids ?? [];
+            if (is_array($deletedFor) && in_array($authUserId, $deletedFor)) {
+                if ($this->relationLoaded('messages') && $this->messages && $this->messages->isNotEmpty()) {
+                    $latestMsg = $this->messages
+                        ->filter(function ($m) use ($authUserId) {
+                            if ($m->is_deleted_for_everyone) {
+                                return true;
+                            }
+                            $df = $m->deleted_for_user_ids ?? [];
+                            return ! (is_array($df) && in_array($authUserId, $df));
+                        })
+                        ->last();
+                } else {
+                    $latestMsg = $this->messages()
+                        ->where(function ($q) use ($authUserId) {
+                            $q->where('is_deleted_for_everyone', true)
+                                ->orWhere(function ($sub) use ($authUserId) {
+                                    $sub->whereNull('deleted_for_user_ids')
+                                        ->orWhereJsonDoesntContain('deleted_for_user_ids', $authUserId);
+                                });
+                        })
+                        ->latest('created_at')
+                        ->first();
+                }
+                $latestMsg?->loadMissing('sender');
+            }
+        }
+
         $participantsData = [];
         if ($this->relationLoaded('participants') && $this->participants) {
             $participantsData = $this->participants->map(function ($p) use ($request) {

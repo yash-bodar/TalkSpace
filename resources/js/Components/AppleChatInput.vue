@@ -190,6 +190,14 @@ watch(() => props.modelValue, (newVal) => {
     }
 });
 
+// YB - 08-09-2026 - Initialize input content on mount (especially for message edit mode)
+onMounted(() => {
+    if (props.modelValue && inputRef.value) {
+        inputRef.value.innerHTML = renderAppleEmojisHtml(props.modelValue);
+        saveSelection();
+    }
+});
+
 defineExpose({
     insertEmoji,
     clear,

@@ -1,9 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch } from 'vue';
-import appleEmojiData from '@emoji-mart/data/sets/15/apple.json';
-import { Picker } from 'emoji-mart';
 
-// YB - 26-08-2026 - Apple iOS Themed Full Emoji Picker
+// YB - 08-09-2026 - Apple iOS Themed Full Emoji Picker with async on-demand loading
 const props = defineProps({
     isOpen: {
         type: Boolean,
@@ -20,7 +18,14 @@ const emit = defineEmits(['select', 'close']);
 const pickerContainer = ref(null);
 let pickerInstance = null;
 
-const initPicker = () => {
+const initPicker = async () => {
+    if (!pickerContainer.value || pickerInstance) return;
+
+    const [{ default: appleEmojiData }, { Picker }] = await Promise.all([
+        import('@emoji-mart/data/sets/15/apple.json'),
+        import('emoji-mart')
+    ]);
+
     if (!pickerContainer.value || pickerInstance) return;
 
     pickerInstance = new Picker({
