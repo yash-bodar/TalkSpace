@@ -7,12 +7,12 @@ use Illuminate\Support\Facades\Broadcast;
 /**
  * Chat conversation authorization channel.
  *
- * // YB - 24-08-2026 code comment
+ * // YB - 27-08-2026 code comment
  */
 Broadcast::channel('chat.{conversationId}', function (User $user, int $conversationId) {
     return Conversation::where('id', $conversationId)
-        ->whereHas('participants', function ($query) use ($user) {
-            $query->where('users.id', $user->id);
+        ->whereHas('participants', function ($q) use ($user) {
+            $q->where('users.id', $user->id);
         })
         ->exists();
 });
@@ -38,4 +38,13 @@ Broadcast::channel('online', function (User $user) {
         'email' => $user->email,
         'avatar_url' => $user->avatar_url,
     ];
+});
+
+/**
+ * Private authenticated channel for heartbeats.
+ *
+ * // YB - 27-08-2026 code comment
+ */
+Broadcast::channel('online-heartbeats', function (User $user) {
+    return (bool) $user->id;
 });

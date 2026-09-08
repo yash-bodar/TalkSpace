@@ -1,9 +1,10 @@
 <script setup>
 import { computed } from 'vue';
 import GuestLayout from '@/Layouts/GuestLayout.vue';
-import PrimaryButton from '@/Components/PrimaryButton.vue';
 import { Head, Link, useForm } from '@inertiajs/vue3';
+import { MailCheck } from 'lucide-vue-next';
 
+// YB - 26-08-2026 - iOS Style Verify Email
 const props = defineProps({
     status: {
         type: String,
@@ -23,38 +24,41 @@ const verificationLinkSent = computed(
 
 <template>
     <GuestLayout>
-        <Head title="Email Verification" />
+        <Head title="Email Verification - TalkSpace" />
 
-        <div class="mb-4 text-sm text-slate-600">
-            Thanks for signing up! Before getting started, could you verify your
-            email address by clicking on the link we just emailed to you? If you
-            didn't receive the email, we will gladly send you another.
+        <div class="mb-5 text-center">
+            <h2 class="text-lg font-extrabold text-slate-900 tracking-tight">Verify Your Email</h2>
+            <p class="text-xs text-slate-500 mt-1 leading-relaxed">
+                Thanks for signing up! Please verify your email address by clicking the link we sent you.
+            </p>
         </div>
 
         <div
-            class="mb-4 text-sm font-medium text-emerald-600"
+            class="mb-4 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 p-3.5 rounded-2xl"
             v-if="verificationLinkSent"
         >
-            A new verification link has been sent to the email address you
-            provided during registration.
+            A new verification link has been sent to your email address.
         </div>
 
-        <form @submit.prevent="submit">
-            <div class="mt-4 flex items-center justify-between">
-                <PrimaryButton
-                    :class="{ 'opacity-25': form.processing }"
-                    :disabled="form.processing"
-                >
-                    Resend Verification Email
-                </PrimaryButton>
+        <form @submit.prevent="submit" class="space-y-4">
+            <button
+                type="submit"
+                :disabled="form.processing"
+                class="w-full py-3.5 px-4 bg-gradient-to-r from-brand-600 via-brand-700 to-brand-800 hover:from-brand-500 hover:to-brand-700 disabled:opacity-50 text-white font-bold text-sm rounded-2xl shadow-lg shadow-brand-600/30 transition-all hover:scale-[1.01] active:scale-[0.99] flex items-center justify-center gap-2 cursor-pointer"
+            >
+                <MailCheck class="w-4 h-4" />
+                Resend Verification Email
+            </button>
 
+            <div class="pt-3 text-center">
                 <Link
                     :href="route('logout')"
                     method="post"
                     as="button"
-                    class="rounded-xl text-sm font-semibold text-slate-600 underline hover:text-brand-600 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 transition"
-                    >Log Out</Link
+                    class="text-xs font-bold text-slate-500 hover:text-slate-800 transition cursor-pointer"
                 >
+                    Log Out
+                </Link>
             </div>
         </form>
     </GuestLayout>

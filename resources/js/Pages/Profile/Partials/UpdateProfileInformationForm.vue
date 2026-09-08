@@ -23,6 +23,7 @@ const fileInput = ref(null);
 const avatarError = ref(null);
 
 // Cropper States
+// YB - 26-08-2026 code comment
 const isCropperOpen = ref(false);
 const rawImageSrc = ref(null);
 const cropZoom = ref(1);
@@ -30,6 +31,7 @@ const cropOffset = reactive({ x: 0, y: 0 });
 const isDragging = ref(false);
 const dragStart = reactive({ x: 0, y: 0 });
 const imageElement = ref(null);
+const maskElement = ref(null);
 
 const form = useForm({
     _method: 'PATCH',
@@ -65,7 +67,7 @@ const triggerFileInput = () => {
     fileInput.value?.click();
 };
 
-// Drag / Pan controls
+// Drag / Pan controls - YB - 26-08-2026
 const startDrag = (e) => {
     isDragging.value = true;
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -86,34 +88,52 @@ const endDrag = () => {
     isDragging.value = false;
 };
 
-// Apply Crop using HTML Canvas
+// Mouse wheel zoom support - YB - 26-08-2026
+const onWheelZoom = (e) => {
+    e.preventDefault();
+    const delta = e.deltaY * -0.0015;
+    const newZoom = Math.min(Math.max(cropZoom.value + delta, 1), 3.5);
+    cropZoom.value = parseFloat(newZoom.toFixed(2));
+};
+
+// Apply Crop using exact HTML Canvas transformation mapping - YB - 26-08-2026
 const applyCrop = () => {
     const img = imageElement.value;
-    if (!img) return;
+    const mask = maskElement.value;
+    if (!img || !mask) return;
 
-    const canvas = document.createElement('canvas');
+    // Get exact on-screen geometry of mask and image
+    const maskRect = mask.getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
+
+    if (maskRect.width === 0 || imgRect.width === 0) return;
+
     const cropSize = 400; // Output square avatar resolution
+    const canvas = document.createElement('canvas');
     canvas.width = cropSize;
     canvas.height = cropSize;
     const ctx = canvas.getContext('2d');
 
-    const viewportSize = 250; // Viewport mask box in UI
-    const scale = (img.naturalWidth / (img.width || viewportSize)) / cropZoom.value;
+    // Fill background with white in case image doesn't cover all corners
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cropSize, cropSize);
 
-    const sourceX = (-cropOffset.x + (viewportSize / 2) * (cropZoom.value - 1)) * scale;
-    const sourceY = (-cropOffset.y + (viewportSize / 2) * (cropZoom.value - 1)) * scale;
-    const sourceSize = viewportSize * scale;
+    // Scale factor from screen mask pixels to output canvas pixels
+    const canvasScale = cropSize / maskRect.width;
 
+    // Relative coordinates of image top-left corner mapped onto canvas coordinate space
+    const imgCanvasX = (imgRect.left - maskRect.left) * canvasScale;
+    const imgCanvasY = (imgRect.top - maskRect.top) * canvasScale;
+    const imgCanvasWidth = imgRect.width * canvasScale;
+    const imgCanvasHeight = imgRect.height * canvasScale;
+
+    // Draw the image exactly as framed inside the mask overlay
     ctx.drawImage(
         img,
-        sourceX,
-        sourceY,
-        sourceSize,
-        sourceSize,
-        0,
-        0,
-        cropSize,
-        cropSize
+        imgCanvasX,
+        imgCanvasY,
+        imgCanvasWidth,
+        imgCanvasHeight
     );
 
     canvas.toBlob((blob) => {
@@ -122,7 +142,7 @@ const applyCrop = () => {
         form.avatar = croppedFile;
         avatarPreview.value = URL.createObjectURL(croppedFile);
         isCropperOpen.value = false;
-    }, 'image/jpeg', 0.92);
+    }, 'image/jpeg', 0.95);
 };
 
 const cancelCrop = () => {
@@ -307,6 +327,7 @@ const submitForm = () => {
                     @touchstart="startDrag"
                     @touchmove="onDrag"
                     @touchend="endDrag"
+                    @wheel.prevent="onWheelZoom"
                 >
                     <!-- Draggable & Scalable Image -->
                     <img 
@@ -322,7 +343,10 @@ const submitForm = () => {
                     />
 
                     <!-- Squircle Mask Overlay (matching TalkSpace avatars) -->
-                    <div class="absolute inset-0 pointer-events-none border-4 border-brand-500 rounded-3xl w-52 h-52 m-auto shadow-[0_0_0_9999px_rgba(15,23,42,0.85)]"></div>
+                    <div 
+                        ref="maskElement"
+                        class="absolute inset-0 pointer-events-none border-4 border-brand-500 rounded-3xl w-52 h-52 m-auto shadow-[0_0_0_9999px_rgba(15,23,42,0.85)]"
+                    ></div>
                 </div>
 
                 <!-- Zoom Slider Controls -->

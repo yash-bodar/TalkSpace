@@ -14,7 +14,8 @@ class ConversationPolicy
      */
     public function view(User $user, Conversation $conversation): bool
     {
-        return $conversation->isParticipant($user->id);
+        return $conversation->isParticipant($user->id)
+            || ($conversation->type === 'group' && $conversation->joinRequests()->where('user_id', $user->id)->where('status', 'pending')->exists());
     }
 
     /**
@@ -30,13 +31,12 @@ class ConversationPolicy
     /**
      * Determine whether the user can delete the model.
      *
-     * // YB - 24-08-2026 code comment
+     * // YB - 27-08-2026 code comment
      */
     public function delete(User $user, Conversation $conversation): bool
     {
         if ($conversation->type === 'group') {
-            $pivot = $conversation->conversationUsers()->where('user_id', $user->id)->first();
-            return $pivot && $pivot->role === 'admin';
+            return $conversation->isAdmin($user->id);
         }
 
         return $conversation->isParticipant($user->id);

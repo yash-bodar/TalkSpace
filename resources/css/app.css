@@ -4,7 +4,9 @@
 
 @layer base {
     * {
-        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "SF Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
     }
 }
 
@@ -101,3 +103,162 @@
 .glow-emerald {
     box-shadow: 0 0 10px 1px rgba(16, 185, 129, 0.6);
 }
+
+/* TalkSpace Signature SweetAlert2 Modal Styling */
+.swal2-container .swal2-popup:not(.swal2-toast) {
+    border-radius: 1.5rem !important;
+    padding: 1.75rem !important;
+    box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.25) !important;
+    border: 1px solid rgba(226, 232, 240, 0.9) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "SF Pro", "Helvetica Neue", Helvetica, Arial, sans-serif !important;
+}
+
+.swal2-container .swal2-popup:not(.swal2-toast) .swal2-title {
+    color: #0F172A !important;
+    font-size: 1.15rem !important;
+    font-weight: 800 !important;
+}
+
+.swal2-container .swal2-popup:not(.swal2-toast) .swal2-html-container {
+    color: #475569 !important;
+    font-size: 0.875rem !important;
+    line-height: 1.5 !important;
+    margin-top: 0.5rem !important;
+}
+
+/* TalkSpace Sleek Toast Notification Styling - YB - 26-08-2026 */
+.swal2-container .swal2-toast {
+    padding: 0.45rem 0.9rem !important;
+    border-radius: 0.875rem !important;
+    box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.12), 0 4px 10px -2px rgba(217, 26, 141, 0.08) !important;
+    border: 1px solid rgba(226, 232, 240, 0.9) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "SF Pro", "Helvetica Neue", Helvetica, Arial, sans-serif !important;
+    background: rgba(255, 255, 255, 0.98) !important;
+    backdrop-filter: blur(12px) !important;
+    overflow: hidden !important;
+    display: flex !important;
+    align-items: center !important;
+}
+
+.swal2-container .swal2-toast .swal2-title {
+    color: #1E293B !important;
+    font-size: 0.8125rem !important; /* 13px - compact, sleek and crisp */
+    font-weight: 700 !important;
+    margin: 0 0.5rem !important;
+    padding: 0 !important;
+    line-height: 1.2 !important;
+}
+
+.swal2-container .swal2-toast .swal2-icon {
+    margin: 0 !important;
+    transform: scale(0.7) !important;
+    transform-origin: center center !important;
+}
+
+/* Success Check Icon in Brand Magenta Theme */
+.swal2-container .swal2-toast .swal2-icon.swal2-success {
+    border-color: #D91A8D !important;
+    color: #D91A8D !important;
+}
+
+.swal2-container .swal2-toast .swal2-icon.swal2-success [class^='swal2-success-line'] {
+    background-color: #D91A8D !important;
+}
+
+.swal2-container .swal2-toast .swal2-icon.swal2-success .swal2-success-ring {
+    border: 0.25em solid rgba(217, 26, 141, 0.25) !important;
+}
+
+/* Timer Progress Loading Line in Brand Magenta Gradient */
+.swal2-container .swal2-toast .swal2-timer-progress-bar {
+    background: linear-gradient(90deg, #D91A8D 0%, #B0106D 100%) !important;
+    height: 3px !important;
+    bottom: 0 !important;
+    border-bottom-left-radius: 0.875rem !important;
+    border-bottom-right-radius: 0.875rem !important;
+}
+
+.swal2-container .swal2-actions {
+    gap: 0.75rem !important;
+    margin-top: 1.25rem !important;
+}
+
+.swal2-container .swal2-confirm {
+    background: linear-gradient(135deg, #D91A8D 0%, #B0106D 100%) !important;
+    background-color: #D91A8D !important;
+    color: #FFFFFF !important;
+    border-radius: 0.875rem !important;
+    padding: 0.7rem 1.5rem !important;
+    font-weight: 700 !important;
+    font-size: 0.8125rem !important;
+    letter-spacing: 0.025em !important;
+    box-shadow: 0 4px 14px -2px rgba(217, 26, 141, 0.45) !important;
+    border: none !important;
+    min-width: 100px !important;
+    cursor: pointer !important;
+    transition: all 0.2s ease !important;
+}
+
+.swal2-container .swal2-confirm:hover {
+    background: linear-gradient(135deg, #BE123C 0%, #900B57 100%) !important;
+    background-color: #BE123C !important;
+    transform: scale(1.02) !important;
+    box-shadow: 0 6px 18px -2px rgba(217, 26, 141, 0.55) !important;
+}
+
+.swal2-container .swal2-cancel {
+    background: #F1F5F9 !important;
+    background-color: #F1F5F9 !important;
+    color: #334155 !important;
+    border: 1px solid #CBD5E1 !important;
+    border-radius: 0.875rem !important;
+    padding: 0.7rem 1.25rem !important;
+    font-weight: 700 !important;
+    font-size: 0.8125rem !important;
+    letter-spacing: 0.025em !important;
+    min-width: 90px !important;
+    cursor: pointer !important;
+    transition: all 0.2s ease !important;
+}
+
+.swal2-container .swal2-cancel:hover {
+    background: #E2E8F0 !important;
+    background-color: #E2E8F0 !important;
+    color: #0F172A !important;
+    transform: scale(1.02) !important;
+}
+
+.swal2-container .swal2-icon.swal2-warning {
+    border-color: #F59E0B !important;
+    color: #D97706 !important;
+}
+
+/* TalkSpace Apple iOS Typography & Inline Emoji Styling - YB - 26-08-2026 */
+body, button, input, textarea, select {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "SF Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.apple-emoji-inline {
+    display: inline-block;
+    width: 1.3em;
+    height: 1.3em;
+    min-width: 1.3em;
+    min-height: 1.3em;
+    vertical-align: -0.24em;
+    margin: 0 0.08em;
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
+}
+
+/* Big Apple Emojis when message only contains emojis (WhatsApp/iOS Style) */
+.big-emoji-only .apple-emoji-inline {
+    width: 2.75rem;
+    height: 2.75rem;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    margin: 0.2rem 0.25rem;
+}
+
