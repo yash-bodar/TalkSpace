@@ -37,6 +37,7 @@ class ConversationResource extends JsonResource
         }
 
         // Calculate unread message count
+        // YB - 08-09-2026 code comment
         $unreadCount = 0;
         if ($this->relationLoaded('messages') && $this->messages) {
             $unreadCount = $this->messages
@@ -46,6 +47,12 @@ class ConversationResource extends JsonResource
                     return $m->created_at > $lastReadAt;
                 })
                 ->count();
+        } elseif ($authUserId) {
+            $unreadQuery = $this->messages()->where('sender_id', '!=', $authUserId);
+            if ($lastReadAt) {
+                $unreadQuery->where('created_at', '>', $lastReadAt);
+            }
+            $unreadCount = $unreadQuery->count();
         }
 
         $latestMsg = null;
@@ -60,9 +67,11 @@ class ConversationResource extends JsonResource
             'type' => $this->type,
             'title' => $title,
             'avatar_url' => $avatar,
-            'direct_recipient' => $directRecipient ? new UserResource($directRecipient) : null,
-            'participants' => UserResource::collection($this->whenLoaded('participants')),
-            'latest_message' => $latestMsg ? new MessageResource($latestMsg) : null,
+            'direct_recipient' => $directRecipient ? (new UserResource($directRecipient))->resolve($request) : null,
+            'participants' => $this->relationLoaded('participants')
+                ? UserResource::collection($this->participants)->resolve($request)
+                : [],
+            'latest_message' => $latestMsg ? (new MessageResource($latestMsg))->resolve($request) : null,
             'unread_count' => $unreadCount,
             'last_message_at' => $this->last_message_at?->toISOString(),
             'created_at' => $this->created_at?->toISOString(),

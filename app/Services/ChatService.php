@@ -31,7 +31,6 @@ class ChatService
                 'participants',
                 'conversationUsers',
                 'latestMessage.sender',
-                'messages',
             ])
             ->orderByDesc('last_message_at')
             ->orderByDesc('created_at')
@@ -43,13 +42,15 @@ class ChatService
      *
      * // YB - 24-08-2026 code comment
      */
-    public function getConversationMessages(Conversation $conversation, int $limit = 50): Collection
+    public function getConversationMessages(Conversation $conversation, int $limit = 100): Collection
     {
         return $conversation->messages()
             ->with('sender')
-            ->orderBy('created_at', 'asc')
+            ->latest('id')
             ->take($limit)
-            ->get();
+            ->get()
+            ->reverse()
+            ->values();
     }
 
     /**

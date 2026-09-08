@@ -24,6 +24,7 @@ import {
     Mail,
     Calendar,
     Shield,
+    ShieldCheck,
     Trash2,
     Info,
     ExternalLink,
@@ -531,6 +532,26 @@ const formatConversationTime = (isoString) => {
     } catch {
         return '';
     }
+};
+
+// YB - 08-09-2026 - Format sidebar latest message preview safely
+const getLatestMessagePreview = (conv) => {
+    const msg = conv?.latest_message;
+    if (!msg) return 'No messages yet';
+
+    if (msg.is_deleted_for_everyone) {
+        return '🚫 This message was deleted';
+    }
+    if (msg.deleted_for_user_ids && currentUser.value && msg.deleted_for_user_ids.includes(currentUser.value.id)) {
+        return '🚫 You deleted this message';
+    }
+    if (msg.body && msg.body.trim()) {
+        return msg.body;
+    }
+    if (msg.attachment_name || msg.attachment_url || msg.attachment_path) {
+        return msg.attachment_name ? `📎 ${msg.attachment_name}` : '📎 Attachment';
+    }
+    return 'No messages yet';
 };
 
 // Scroll to Bottom
@@ -1257,9 +1278,9 @@ onUnmounted(() => {
 
                             <div class="flex items-center justify-between">
                                 <p class="text-xs text-slate-500 truncate pr-2">
-                                    <span v-if="conv.latest_message?.sender_id === currentUser?.id" class="text-brand-600 font-bold">You: </span>
-                                    <span v-else-if="conv.type === 'group' && conv.latest_message" class="text-slate-700 font-semibold">{{ conv.latest_message.sender?.name?.split(' ')[0] }}: </span>
-                                    <span>{{ conv.latest_message?.body || (conv.latest_message?.attachment_name ? '📎 Attachment' : 'No messages yet') }}</span>
+                                    <span v-if="conv.latest_message && conv.latest_message.sender_id === currentUser?.id" class="text-brand-600 font-bold">You: </span>
+                                    <span v-else-if="conv.type === 'group' && conv.latest_message?.sender?.name" class="text-slate-700 font-semibold">{{ conv.latest_message.sender.name.split(' ')[0] }}: </span>
+                                    <span>{{ getLatestMessagePreview(conv) }}</span>
                                 </p>
 
                                 <div class="flex items-center space-x-1.5 flex-shrink-0">
