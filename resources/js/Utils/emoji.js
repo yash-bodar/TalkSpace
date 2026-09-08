@@ -98,8 +98,9 @@ export const renderAppleEmojisHtml = (text) => {
 
     // Replace all full emoji sequences with Apple <img> tags without leaving trailing variation selectors
     return safeText.replace(EMOJI_REGEX, (match) => {
+        if (!match) return '';
         const url = getAppleEmojiUrl(match);
         if (!url) return match;
-        return `<img src="${url}" class="apple-emoji-inline" alt="${match}" draggable="false" loading="lazy" />`;
+        return `<img src="${url}" class="apple-emoji-inline" data-emoji="${match}" alt="${match}" draggable="false" loading="lazy" />`;
     });
 };

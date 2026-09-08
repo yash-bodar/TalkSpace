@@ -2,7 +2,7 @@
 import { ref, watch, onMounted, nextTick } from 'vue';
 import { renderAppleEmojisHtml, getAppleEmojiUrl } from '@/Utils/emoji';
 
-// YB - 26-08-2026 - Apple iOS Rich Chat Input Component
+// YB - 08-09-2026 - Apple iOS Rich Chat Input Component with safe selection preservation
 const props = defineProps({
     modelValue: {
         type: String,
@@ -26,6 +26,35 @@ const emit = defineEmits(['update:modelValue', 'send', 'typing']);
 
 const inputRef = ref(null);
 let isInternalUpdate = false;
+let savedRange = null;
+
+// Save current selection range inside the editor
+const saveSelection = () => {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && inputRef.value && inputRef.value.contains(sel.anchorNode)) {
+        savedRange = sel.getRangeAt(0).cloneRange();
+    }
+};
+
+// Restore selection range or focus to the end
+const restoreSelection = () => {
+    if (!inputRef.value) return;
+    inputRef.value.focus();
+    const sel = window.getSelection();
+    if (!sel) return;
+
+    if (savedRange && inputRef.value.contains(savedRange.commonAncestorContainer)) {
+        sel.removeAllRanges();
+        sel.addRange(savedRange);
+    } else {
+        const range = document.createRange();
+        range.selectNodeContents(inputRef.value);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        savedRange = range.cloneRange();
+    }
+};
 
 // Extract raw text with Unicode emojis from contenteditable DOM
 const extractRawText = () => {
@@ -36,8 +65,8 @@ const extractRawText = () => {
         if (node.nodeType === Node.TEXT_NODE) {
             text += node.textContent;
         } else if (node.nodeType === Node.ELEMENT_NODE) {
-            if (node.tagName === 'IMG' && node.dataset.emoji) {
-                text += node.dataset.emoji;
+            if (node.tagName === 'IMG') {
+                text += node.dataset.emoji || node.getAttribute('alt') || '';
             } else if (node.tagName === 'BR') {
                 text += '\n';
             } else if (node.tagName === 'DIV' || node.tagName === 'P') {
@@ -64,6 +93,7 @@ const extractRawText = () => {
 
 // Handle user typing or pasting
 const handleInput = () => {
+    saveSelection();
     isInternalUpdate = true;
     const raw = extractRawText();
     emit('update:modelValue', raw);
@@ -91,42 +121,71 @@ const handlePaste = (e) => {
     handleInput();
 };
 
-// Insert an Apple emoji at current cursor position
+// Insert an Apple emoji at current cursor position without replacing existing emojis
 const insertEmoji = (emojiNative) => {
-    if (!inputRef.value) return;
-    inputRef.value.focus();
+    if (!inputRef.value || !emojiNative) return;
+    restoreSelection();
+
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
 
     const url = getAppleEmojiUrl(emojiNative);
-    const imgHtml = url 
-        ? `<img src="${url}" class="apple-emoji-inline" data-emoji="${emojiNative}" alt="${emojiNative}" draggable="false" />`
-        : emojiNative;
+    let nodeToInsert;
+    if (url) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.className = 'apple-emoji-inline';
+        img.dataset.emoji = emojiNative;
+        img.alt = emojiNative;
+        img.draggable = false;
+        img.loading = 'lazy';
+        nodeToInsert = img;
+    } else {
+        nodeToInsert = document.createTextNode(emojiNative);
+    }
 
-    document.execCommand('insertHTML', false, imgHtml);
+    range.insertNode(nodeToInsert);
+
+    // Position caret immediately after the newly inserted emoji
+    const newRange = document.createRange();
+    newRange.setStartAfter(nodeToInsert);
+    newRange.setEndAfter(nodeToInsert);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+    savedRange = newRange.cloneRange();
+
     handleInput();
 };
 
 const clear = () => {
     if (inputRef.value) {
         inputRef.value.innerHTML = '';
+        savedRange = null;
         emit('update:modelValue', '');
     }
 };
 
 const focus = () => {
-    inputRef.value?.focus();
+    if (!inputRef.value) return;
+    restoreSelection();
 };
 
-// Sync when modelValue is changed externally (e.g. cleared on send)
+// Sync when modelValue is changed externally (e.g. cleared on send or edited)
 watch(() => props.modelValue, (newVal) => {
     if (isInternalUpdate) return;
     if (!inputRef.value) return;
 
     if (!newVal) {
         inputRef.value.innerHTML = '';
+        savedRange = null;
     } else {
         const currentRaw = extractRawText();
         if (currentRaw !== newVal) {
             inputRef.value.innerHTML = renderAppleEmojisHtml(newVal);
+            saveSelection();
         }
     }
 });
@@ -148,6 +207,11 @@ defineExpose({
         @input="handleInput"
         @keydown="handleKeyDown"
         @paste="handlePaste"
+        @keyup="saveSelection"
+        @mouseup="saveSelection"
+        @touchend="saveSelection"
+        @focus="saveSelection"
+        @blur="saveSelection"
         :style="{ maxHeight: maxHeight }"
         class="w-full glass-input text-slate-800 text-sm rounded-2xl px-4 py-3 border border-slate-200 focus:outline-none resize-none transition overflow-y-auto custom-scrollbar shadow-xs select-text focus:border-brand-300 focus:ring-2 focus:ring-brand-500/20"
         :data-placeholder="placeholder"

@@ -1063,6 +1063,26 @@ const formatConversationTime = (isoString) => {
     }
 };
 
+// YB - 08-09-2026 - Format sidebar latest message preview safely
+const getLatestMessagePreview = (conv) => {
+    const msg = conv?.latest_message;
+    if (!msg) return 'No messages yet';
+
+    if (msg.is_deleted_for_everyone) {
+        return '🚫 This message was deleted';
+    }
+    if (msg.deleted_for_user_ids && currentUser.value && msg.deleted_for_user_ids.includes(currentUser.value.id)) {
+        return '🚫 You deleted this message';
+    }
+    if (msg.body && msg.body.trim()) {
+        return msg.body;
+    }
+    if (msg.attachment_name || msg.attachment_url || msg.attachment_path) {
+        return msg.attachment_name ? `📎 ${msg.attachment_name}` : '📎 Attachment';
+    }
+    return 'No messages yet';
+};
+
 // Scroll to Bottom
 const scrollToBottom = async (smooth = false) => {
     await nextTick();

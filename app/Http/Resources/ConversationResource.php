@@ -46,6 +46,12 @@ class ConversationResource extends JsonResource
                     return $m->created_at > $lastReadAt;
                 })
                 ->count();
+        } elseif ($authUserId) {
+            $unreadQuery = $this->messages()->where('sender_id', '!=', $authUserId);
+            if ($lastReadAt) {
+                $unreadQuery->where('created_at', '>', $lastReadAt);
+            }
+            $unreadCount = $unreadQuery->count();
         }
 
         $latestMsg = null;
