@@ -21,6 +21,9 @@ class Message extends Model
         'attachment_path',
         'attachment_name',
         'attachment_size',
+        'audio_waveform',
+        'audio_duration',
+        'mentioned_user_ids',
         'read_at',
         'delivered_at',
         'is_edited',
@@ -31,10 +34,18 @@ class Message extends Model
         'pinned_at',
     ];
 
+    /**
+     * Get the attributes that should be cast.
+     *
+     * // YB - 14-09-2026 code comment
+     */
     protected function casts(): array
     {
         return [
             'attachment_size' => 'integer',
+            'audio_waveform' => 'array',
+            'audio_duration' => 'integer',
+            'mentioned_user_ids' => 'array',
             'read_at' => 'datetime',
             'delivered_at' => 'datetime',
             'is_edited' => 'boolean',

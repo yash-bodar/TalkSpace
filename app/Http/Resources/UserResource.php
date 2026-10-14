@@ -15,13 +15,18 @@ class UserResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        $statusActive = $this->status_expires_at ? now()->lt($this->status_expires_at) : true;
+
         return [
             'id' => $this->id,
             'name' => $this->name,
             'email' => $this->email,
             'avatar_url' => $this->avatar_url,
+            'status_text' => $statusActive ? $this->status_text : null,
+            'status_emoji' => $statusActive ? $this->status_emoji : null,
+            'status_expires_at' => $this->status_expires_at?->toISOString(),
             'last_active_at' => $this->last_active_at?->toISOString(),
-            // YB - 26-08-2026 format last active timestamp according to timeframe rules
+            // YB - 14-09-2026 format last active timestamp according to timeframe rules
             'last_active_human' => $this->formatLastActiveHuman(),
         ];
     }

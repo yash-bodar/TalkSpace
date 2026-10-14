@@ -51,17 +51,35 @@ import {
     Camera,
     CheckCircle2,
     XCircle,
-    Settings,
     Smile,
     CornerUpLeft,
     ChevronUp,
     ChevronDown,
+    Mic,
+    MicOff,
+    Share2,
+    Bookmark,
+    Archive,
+    VolumeX,
+    Radio,
 } from 'lucide-vue-next';
 import { format, formatDistanceToNow, isToday, isYesterday, parseISO } from 'date-fns';
 import { confirmDialog, showSuccess, showError, showToast } from '@/Utils/alert';
 import AppleEmoji from '@/Components/AppleEmoji.vue';
 import AppleChatInput from '@/Components/AppleChatInput.vue';
 import { renderAppleEmojisHtml, isOnlyEmojis } from '@/Utils/emoji';
+import WebSocketStatusBanner from '@/Components/Chat/WebSocketStatusBanner.vue';
+import VoiceNotePlayer from '@/Components/Chat/VoiceNotePlayer.vue';
+import VoiceRecorderBar from '@/Components/Chat/VoiceRecorderBar.vue';
+import MediaLightbox from '@/Components/Chat/MediaLightbox.vue';
+import ForwardMessageModal from '@/Components/Chat/ForwardMessageModal.vue';
+import MessageSearchDrawer from '@/Components/Chat/MessageSearchDrawer.vue';
+import UserStatusModal from '@/Components/Chat/UserStatusModal.vue';
+import TypingIndicatorBubble from '@/Components/Chat/TypingIndicatorBubble.vue';
+import UnreadSeparator from '@/Components/Chat/UnreadSeparator.vue';
+import MentionPopover from '@/Components/Chat/MentionPopover.vue';
+import { useVoiceRecorder } from '@/Composables/useVoiceRecorder';
+import { useAudioNotifications } from '@/Composables/useAudioNotifications';
 
 // YB - 08-09-2026 - Async on-demand loading of heavy EmojiPicker bundle
 const EmojiPicker = defineAsyncComponent(() => import('@/Components/EmojiPicker.vue'));
@@ -154,16 +172,307 @@ const scrollToMessage = (msgId) => {
     if (!msgId) return;
     highlightedMessageId.value = Number(msgId);
     nextTick(() => {
-        const el = document.getElementById(`message-${msgId}`);
-        if (el) {
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+        const tryScroll = (attemptsLeft = 8) => {
+            const el = document.getElementById(`message-${msgId}`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } else if (attemptsLeft > 0) {
+                setTimeout(() => tryScroll(attemptsLeft - 1), 120);
+            }
+        };
+        tryScroll();
     });
     setTimeout(() => {
         if (highlightedMessageId.value === Number(msgId)) {
             highlightedMessageId.value = null;
         }
-    }, 2500);
+    }, 4000);
+};
+
+// WebSocket Connection State - YB - 14-09-2026
+const wsStatus = ref('connected');
+
+// Voice Notes State & Actions - YB - 14-09-2026
+const voiceRecorder = useVoiceRecorder();
+
+const handleStartVoiceRecording = async () => {
+    try {
+        await voiceRecorder.startRecording();
+    } catch (e) {
+        showError('Microphone Access Denied', 'Please allow microphone access to record voice notes.');
+    }
+};
+
+const handleCancelVoiceRecording = () => {
+    voiceRecorder.cancelRecording();
+};
+
+const handleSendVoiceRecording = async () => {
+    if (!props.activeConversation) return;
+    const result = await voiceRecorder.stopRecording();
+    if (!result || !result.blob) return;
+
+    isSending.value = true;
+    try {
+        const formData = new FormData();
+        const extension = result.mimeType.includes('mp4') ? 'm4a' : (result.mimeType.includes('ogg') ? 'ogg' : 'webm');
+        formData.append('audio', result.blob, `voice-note-${Date.now()}.${extension}`);
+        formData.append('duration', result.duration || 1);
+        (result.waveform || []).forEach((val, i) => {
+            formData.append(`waveform[${i}]`, val);
+        });
+        if (replyingToMessage.value) {
+            formData.append('reply_to_id', replyingToMessage.value.id);
+        }
+
+        const res = await window.axios.post(route('chat.messages.voice', props.activeConversation.id), formData);
+        if (res.data.message && !messageList.value.some(m => m.id === res.data.message.id)) {
+            messageList.value.push(res.data.message);
+            updateConversationLatestMessage(props.activeConversation.id, res.data.message);
+            scrollToBottom(true);
+        }
+        cancelReply();
+    } catch (err) {
+        console.error('Failed to send voice note:', err);
+        showError('Failed to send voice message', err.response?.data?.message || 'Something went wrong.');
+    } finally {
+        isSending.value = false;
+    }
+};
+
+// Media Lightbox State - YB - 14-09-2026
+const lightboxMedia = ref({ isOpen: false, url: '', name: '', type: 'image' });
+const openLightbox = (url, name = '', type = 'image') => {
+    lightboxMedia.value = { isOpen: true, url, name, type };
+};
+const closeLightbox = () => {
+    lightboxMedia.value.isOpen = false;
+};
+
+// Message Forwarding State - YB - 14-09-2026
+const isForwardModalOpen = ref(false);
+const messageToForward = ref(null);
+const openForwardModal = (msg) => {
+    activeMessageMenuId.value = null;
+    messageToForward.value = msg;
+    isForwardModalOpen.value = true;
+};
+const handleMessageForwarded = (data) => {
+    showToast(`Message forwarded to ${data.count} conversation(s)!`, 'success');
+};
+
+// Historical Message Search State - YB - 14-09-2026
+const isSearchDrawerOpen = ref(false);
+const openSearchDrawer = () => {
+    isSearchDrawerOpen.value = true;
+};
+const handleSearchMessageSelect = (msg) => {
+    isSearchDrawerOpen.value = false;
+    const isCurrentConv = props.activeConversation && Number(props.activeConversation.id) === Number(msg.conversation_id);
+    const isLoaded = messageList.value.some(m => Number(m.id) === Number(msg.id));
+
+    if (isCurrentConv && isLoaded) {
+        scrollToMessage(msg.id);
+    } else {
+        router.visit(route('chat.show', { conversation: msg.conversation_id, around_message_id: msg.id }), {
+            preserveScroll: true,
+            onSuccess: () => {
+                setTimeout(() => scrollToMessage(msg.id), 350);
+            }
+        });
+    }
+};
+
+// User Profile Status State - YB - 14-09-2026
+const isStatusModalOpen = ref(false);
+const openStatusModal = () => {
+    isStatusModalOpen.value = true;
+};
+const handleStatusUpdated = (updatedUser) => {
+    if (page.props.auth?.user) {
+        page.props.auth.user.status_text = updatedUser.status_text;
+        page.props.auth.user.status_emoji = updatedUser.status_emoji;
+        page.props.auth.user.status_expires_at = updatedUser.status_expires_at;
+    }
+    showToast('Status updated successfully!', 'success');
+};
+
+// Sidebar Filter Tabs (All / Pinned / Archived) - YB - 14-09-2026
+const sidebarTab = ref('all'); // 'all', 'pinned', 'archived'
+
+const filteredConversationsByTab = computed(() => {
+    let list = localConversations.value;
+    if (sidebarTab.value === 'pinned') {
+        list = list.filter(c => c.is_pinned);
+    } else if (sidebarTab.value === 'archived') {
+        list = list.filter(c => c.is_archived);
+    } else {
+        list = list.filter(c => !c.is_archived);
+    }
+
+    if (!searchQuery.value) return list;
+    const q = searchQuery.value.toLowerCase();
+    return list.filter(c => {
+        const title = c.title || c.direct_recipient?.name || '';
+        return title.toLowerCase().includes(q);
+    });
+});
+
+const toggleConversationPin = async (conv) => {
+    try {
+        const res = await window.axios.post(route('chat.conversations.pin', conv.id));
+        conv.is_pinned = res.data.is_pinned;
+        conv.pinned_at = res.data.pinned_at;
+        localConversations.value.sort((a, b) => {
+            if (a.is_pinned !== b.is_pinned) return b.is_pinned ? 1 : -1;
+            return new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0);
+        });
+        showToast(conv.is_pinned ? 'Chat pinned to top' : 'Chat unpinned', 'success');
+    } catch (err) {
+        console.error('Failed to toggle pin', err);
+        showError('Action Failed', 'Could not update pin status.');
+    }
+};
+
+const toggleConversationArchive = async (conv) => {
+    try {
+        const res = await window.axios.post(route('chat.conversations.archive', conv.id));
+        conv.is_archived = res.data.is_archived;
+        conv.archived_at = res.data.archived_at;
+        showToast(conv.is_archived ? 'Chat archived' : 'Chat unarchived', 'success');
+    } catch (err) {
+        console.error('Failed to toggle archive', err);
+        showError('Action Failed', 'Could not update archive status.');
+    }
+};
+
+const updateConversationMute = async (conv, duration = 'always') => {
+    if (!conv) return;
+    try {
+        const res = await window.axios.post(route('chat.conversations.mute', conv.id), { duration });
+        conv.is_muted = res.data.is_muted;
+        conv.muted_until = res.data.muted_until;
+
+        // YB - 14-09-2026 - Sync localConversations array
+        const target = localConversations.value.find(c => Number(c.id) === Number(conv.id));
+        if (target) {
+            target.is_muted = res.data.is_muted;
+            target.muted_until = res.data.muted_until;
+        }
+
+        // YB - 14-09-2026 - Sync activeConversation if currently opened
+        if (props.activeConversation && Number(props.activeConversation.id) === Number(conv.id)) {
+            props.activeConversation.is_muted = res.data.is_muted;
+            props.activeConversation.muted_until = res.data.muted_until;
+        }
+
+        showToast(res.data.is_muted ? 'Notifications muted' : 'Notifications unmuted', 'success');
+    } catch (err) {
+        console.error('Failed to update mute', err);
+        showError('Action Failed', 'Could not update mute status.');
+    }
+};
+
+// Check if a conversation is muted (accounting for expiry duration) - YB - 14-09-2026
+const isConversationMuted = (convOrId) => {
+    if (!convOrId) return false;
+    let conv = null;
+    if (typeof convOrId === 'object') {
+        conv = convOrId;
+    } else {
+        conv = localConversations.value.find(c => Number(c.id) === Number(convOrId));
+        if (!conv && props.activeConversation && Number(props.activeConversation.id) === Number(convOrId)) {
+            conv = props.activeConversation;
+        }
+    }
+    if (!conv || !conv.is_muted) return false;
+    if (conv.muted_until) {
+        return new Date(conv.muted_until).getTime() > Date.now();
+    }
+    return true;
+};
+
+// @Mentions in Group Chats - YB - 14-09-2026
+const isMentionPopoverOpen = ref(false);
+const mentionQuery = ref('');
+const mentionableUsers = computed(() => {
+    if (!props.activeConversation || props.activeConversation.type !== 'group') return [];
+    const participants = props.activeConversation.participants || [];
+    const q = mentionQuery.value.toLowerCase();
+    return participants.filter(p => p.id !== currentUser.value?.id && (!q || p.name.toLowerCase().includes(q)));
+});
+
+const handleMentionSelect = (user) => {
+    isMentionPopoverOpen.value = false;
+    const text = messageInput.value || '';
+    const atIndex = text.lastIndexOf('@');
+    if (atIndex !== -1) {
+        messageInput.value = text.substring(0, atIndex) + `@${user.name} `;
+    } else {
+        messageInput.value += `@${user.name} `;
+    }
+    composerInputRef.value?.focus();
+};
+
+// Audio Notifications & Web Push - YB - 14-09-2026
+const audioNotifications = useAudioNotifications();
+
+// First Unread Message tracking for Separator - YB - 14-09-2026
+const firstUnreadMessageId = computed(() => {
+    if (!props.activeConversation || !messageList.value.length) return null;
+    const unread = messageList.value.find(m => 
+        m.sender_id !== currentUser.value?.id && 
+        !m.read_at && 
+        (!m.read_by || !m.read_by.some(u => u.user?.id === currentUser.value?.id))
+    );
+    return unread ? unread.id : null;
+});
+
+// Scroll to bottom button tracking - YB - 14-09-2026
+const showScrollToBottom = ref(false);
+const handleMessagesScroll = () => {
+    if (!messagesContainer.value) return;
+    const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value;
+    showScrollToBottom.value = scrollHeight - scrollTop - clientHeight > 250;
+};
+
+// Composer text change handler for @mentions - YB - 14-09-2026
+const handleComposerInputChange = (e) => {
+    handleTypingInput();
+    if (props.activeConversation?.type === 'group') {
+        const val = messageInput.value || '';
+        const lastAt = val.lastIndexOf('@');
+        if (lastAt !== -1 && (lastAt === 0 || val[lastAt - 1] === ' ')) {
+            const query = val.slice(lastAt + 1);
+            if (!query.includes(' ')) {
+                mentionQuery.value = query;
+                isMentionPopoverOpen.value = true;
+                return;
+            }
+        }
+    }
+    isMentionPopoverOpen.value = false;
+};
+
+// Render message text body with Apple emojis and highlighted @mentions - YB - 14-09-2026
+const renderMessageBody = (msg) => {
+    if (!msg?.body) return '';
+    let text = msg.body;
+
+    // 1. Tokenize @mentions on raw text first so emoji URLs containing @15.0.1 are never corrupted
+    text = text.replace(/(^|\s)@([a-zA-Z0-9_.-]+)/g, (match, space, username) => {
+        return `${space}___TS_MENTION___@${username}___TS_END_MENTION___`;
+    });
+
+    // 2. Safely parse and convert Unicode emojis to Apple CDN 3D images
+    text = renderAppleEmojisHtml(text);
+
+    // 3. Restore mention tokens into highlighted pill badges
+    text = text.replace(/___TS_MENTION___(@[a-zA-Z0-9_.-]+)___TS_END_MENTION___/g, (match, mention) => {
+        return `<span class="inline-flex items-center px-1.5 py-0.2 bg-brand-500/20 text-brand-700 font-bold rounded-md">${mention}</span>`;
+    });
+
+    return text;
 };
 
 // Emoji Reactions State - YB - 26-08-2026
@@ -285,28 +594,21 @@ const openMessageInfoModal = async (msg) => {
     }
 };
 
-// Notification Sound (Web Audio API synthesis for zero external asset reliance)
-const playNotificationSound = () => {
-    try {
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = 'sine';
-        osc.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
-        osc.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + 0.12); // A5
-        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.25);
-    } catch {
-        // Silently ignore audio playback restrictions
+// Notification Sound (Web Audio API synthesis for zero external asset reliance) - YB - 14-09-2026
+const playNotificationSound = (conversationId = null) => {
+    if (conversationId && isConversationMuted(conversationId)) {
+        return;
     }
+    audioNotifications.playMessageChime('incoming');
 };
 
 // Browser Desktop Push Notification - YB - 27-08-2026
 const showDesktopNotification = (title, body, conversationId = null, icon = null) => {
+    // Suppress if conversation is currently muted - YB - 14-09-2026
+    if (conversationId && isConversationMuted(conversationId)) {
+        return;
+    }
+
     if ('Notification' in window) {
         const createNotification = () => {
             try {
@@ -438,13 +740,6 @@ const remoteStream = ref(null);
 const localVideoRef = ref(null);
 const remoteVideoRef = ref(null);
 let peerConnection = null;
-
-const rtcConfig = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-    ],
-};
 
 const openUserProfile = (user = null) => {
     if (user) {
@@ -684,6 +979,15 @@ const getMessageTickState = (msg) => {
     return 'sent';
 };
 
+// Dynamic STUN / TURN Configuration - YB - 14-09-2026
+const rtcConfig = computed(() => {
+    return page.props.webrtcConfig || {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' }
+        ]
+    };
+});
+
 // Format call timer
 const formattedCallDuration = computed(() => {
     const mins = Math.floor(callDurationSeconds.value / 60);
@@ -739,7 +1043,7 @@ const initiateCall = async (type = 'audio') => {
             localVideoRef.value.srcObject = localStream.value;
         }
 
-        peerConnection = new RTCPeerConnection(rtcConfig);
+        peerConnection = new RTCPeerConnection(rtcConfig.value);
 
         localStream.value.getTracks().forEach((track) => {
             peerConnection.addTrack(track, localStream.value);
@@ -795,7 +1099,7 @@ const acceptIncomingCall = async () => {
             localVideoRef.value.srcObject = localStream.value;
         }
 
-        peerConnection = new RTCPeerConnection(rtcConfig);
+        peerConnection = new RTCPeerConnection(rtcConfig.value);
 
         localStream.value.getTracks().forEach((track) => {
             peerConnection.addTrack(track, localStream.value);
@@ -881,32 +1185,42 @@ const endCall = async (reason = 'completed') => {
 };
 
 // Filter and Sort conversations by tab, search, and pinned status
-// YB - 25-08-2026 - Pinned priority sorting & Category Tab Filtering
+// YB - 14-09-2026 - Pinned priority sorting & Category Tab Filtering
 const filteredConversations = computed(() => {
     let list = [...localConversations.value];
 
     // Filter by Tab
-    if (activeSidebarTab.value === 'unread') {
-        list = list.filter(c => c.unread_count > 0);
-    } else if (activeSidebarTab.value === 'groups') {
-        list = list.filter(c => c.type === 'group');
-    } else if (activeSidebarTab.value === 'direct') {
-        list = list.filter(c => c.type === 'direct');
+    if (activeSidebarTab.value === 'pinned') {
+        list = list.filter(c => c.is_pinned && !c.is_archived);
+    } else if (activeSidebarTab.value === 'archived') {
+        list = list.filter(c => c.is_archived);
+    } else {
+        // Exclude archived from regular views
+        list = list.filter(c => !c.is_archived);
+
+        if (activeSidebarTab.value === 'unread') {
+            list = list.filter(c => c.unread_count > 0);
+        } else if (activeSidebarTab.value === 'groups') {
+            list = list.filter(c => c.type === 'group');
+        } else if (activeSidebarTab.value === 'direct') {
+            list = list.filter(c => c.type === 'direct');
+        }
     }
 
     // Filter by Search Query
     if (searchQuery.value.trim()) {
         const q = searchQuery.value.toLowerCase();
         list = list.filter(c => 
-            c.title.toLowerCase().includes(q) ||
+            (c.title && c.title.toLowerCase().includes(q)) ||
+            (c.direct_recipient?.name && c.direct_recipient.name.toLowerCase().includes(q)) ||
             (c.latest_message?.body && c.latest_message.body.toLowerCase().includes(q))
         );
     }
 
     // Sort: Pinned first, then latest activity
     return list.sort((a, b) => {
-        const aPinned = pinnedConversationIds.value.has(a.id);
-        const bPinned = pinnedConversationIds.value.has(b.id);
+        const aPinned = a.is_pinned || pinnedConversationIds.value?.has?.(a.id);
+        const bPinned = b.is_pinned || pinnedConversationIds.value?.has?.(b.id);
         if (aPinned && !bPinned) return -1;
         if (!aPinned && bPinned) return 1;
         return new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0);
@@ -1390,7 +1704,25 @@ const setupEchoListeners = () => {
                 updated.delete(Number(id));
                 onlineUserIds.value = updated;
             }
+        })
+        .listen('.UserStatusUpdated', (event) => {
+            if (event.user) {
+                localConversations.value.forEach(c => {
+                    if (c.type === 'direct' && c.direct_recipient?.id === event.user.id) {
+                        c.direct_recipient.status_text = event.user.status_text;
+                        c.direct_recipient.status_emoji = event.user.status_emoji;
+                    }
+                });
+            }
         });
+
+    // Monitor WebSocket Connection State for Banner - YB - 14-09-2026
+    if (window.Echo?.connector?.pusher?.connection) {
+        window.Echo.connector.pusher.connection.bind('state_change', (states) => {
+            wsStatus.value = states.current;
+        });
+        wsStatus.value = window.Echo.connector.pusher.connection.state || 'connected';
+    }
 
     // 2. Heartbeat Channel: Guaranteed real-time active pings across all users - YB - 27-08-2026 Private authenticated channel
     window.Echo.private('online-heartbeats')
@@ -1402,6 +1734,17 @@ const setupEchoListeners = () => {
 
     // 3. Personal Private Channel: Notifications & inbox updates
     window.Echo.private(`user.${currentUser.value.id}`)
+        .listen('.ConversationPinned', (event) => {
+            const target = localConversations.value.find(c => c.id === event.conversation_id);
+            if (target) {
+                target.is_pinned = event.is_pinned;
+                target.pinned_at = event.pinned_at;
+                localConversations.value.sort((a, b) => {
+                    if (a.is_pinned !== b.is_pinned) return b.is_pinned ? 1 : -1;
+                    return new Date(b.last_message_at || 0) - new Date(a.last_message_at || 0);
+                });
+            }
+        })
         .listen('.message.sent', (event) => {
             const incomingMsg = event.message;
             if (incomingMsg.sender_id) {
@@ -1419,9 +1762,10 @@ const setupEchoListeners = () => {
                 const groupTitle = conv?.title || incomingMsg.conversation?.title || 'Group';
                 const senderName = incomingMsg.sender?.name || 'TalkSpace';
 
-                // Suppress audio chime and desktop notification for system / event messages (grey pills) - YB - 27-08-2026
-                if (incomingMsg.type !== 'system' && incomingMsg.sender_id !== currentUser.value?.id) {
-                    playNotificationSound();
+                // Suppress audio chime and desktop notification for system / event messages and muted chats - YB - 14-09-2026
+                const isMuted = isConversationMuted(conv || incomingMsg.conversation_id);
+                if (!isMuted && incomingMsg.type !== 'system' && incomingMsg.sender_id !== currentUser.value?.id) {
+                    playNotificationSound(incomingMsg.conversation_id);
 
                     const notifTitle = isGroup ? `${senderName} (${groupTitle})` : senderName;
                     const notifBody = incomingMsg.body || (incomingMsg.attachment_name ? '📎 ' + incomingMsg.attachment_name : 'Sent you a message');
@@ -1459,9 +1803,10 @@ const subscribeToActiveChat = () => {
                 messageList.value.push(incomingMsg);
                 scrollToBottom(true);
 
-                // Suppress notifications for system messages & own messages - YB - 27-08-2026
-                if (incomingMsg.sender_id !== currentUser.value?.id && incomingMsg.type !== 'system') {
-                    playNotificationSound();
+                // Suppress notifications for system messages, own messages, and muted chats - YB - 14-09-2026
+                const isMuted = isConversationMuted(props.activeConversation);
+                if (!isMuted && incomingMsg.sender_id !== currentUser.value?.id && incomingMsg.type !== 'system') {
+                    playNotificationSound(props.activeConversation?.id);
                     if (typeof document !== 'undefined' && !document.hasFocus()) {
                         const isGroup = props.activeConversation?.type === 'group';
                         const groupTitle = props.activeConversation?.title || 'Group';
@@ -1638,7 +1983,13 @@ watch(() => props.conversations, (newConvs) => {
 // via WebSocket, so we must not clobber local state on every Inertia refresh.
 watch(() => props.messages, (newMsgs) => {
     messageList.value = normalizeArray(newMsgs);
-    scrollToBottom();
+    const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+    const targetMsgId = urlParams?.get('around_message_id');
+    if (targetMsgId) {
+        setTimeout(() => scrollToMessage(Number(targetMsgId)), 350);
+    } else {
+        scrollToBottom();
+    }
 }, { deep: false });
 
 // YB - 24-08-2026 - Guard: only re-subscribe when conversation ID changes.
@@ -1659,7 +2010,13 @@ watch(() => props.activeConversation, (newConv, oldConv) => {
     // Always update typing state and scroll on conversation change
     if (nextId) {
         typingUsers.value.clear();
-        scrollToBottom();
+        const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+        const targetMsgId = urlParams?.get('around_message_id');
+        if (targetMsgId) {
+            setTimeout(() => scrollToMessage(Number(targetMsgId)), 350);
+        } else {
+            scrollToBottom();
+        }
     }
 });
 
@@ -1668,20 +2025,38 @@ const closeAllPickers = () => {
     activeReactionPickerMessageId.value = null;
 };
 
+// Global Keyboard Shortcut: Ctrl+K / Cmd+K to open Search Drawer - YB - 14-09-2026
+const handleGlobalKeydown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        isSearchDrawerOpen.value = !isSearchDrawerOpen.value;
+    }
+};
+
 onMounted(() => {
     setupEchoListeners();
-    scrollToBottom();
+    
+    // Check if navigating directly to a historical message via URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const targetMsgId = urlParams.get('around_message_id');
+    if (targetMsgId) {
+        setTimeout(() => scrollToMessage(Number(targetMsgId)), 400);
+    } else {
+        scrollToBottom();
+    }
 
     // Global click listener to close emoji popups on outside click - YB - 26-08-2026
     window.addEventListener('click', closeAllPickers);
+    window.addEventListener('keydown', handleGlobalKeydown);
 
     // Send initial heartbeat immediately & catch up pending deliveries
     sendHeartbeat();
 
-    // Unread Catch-Up Notification when opening TalkSpace with missed messages - YB - 27-08-2026
-    const totalUnread = localConversations.value.reduce((acc, c) => acc + (c.unread_count || 0), 0);
+    // Unread Catch-Up Notification when opening TalkSpace with missed messages - YB - 14-09-2026
+    const unmutedConversations = localConversations.value.filter(c => !isConversationMuted(c));
+    const totalUnread = unmutedConversations.reduce((acc, c) => acc + (c.unread_count || 0), 0);
     if (totalUnread > 0) {
-        const unreadChatsCount = localConversations.value.filter(c => c.unread_count > 0).length;
+        const unreadChatsCount = unmutedConversations.filter(c => c.unread_count > 0).length;
         setTimeout(() => {
             playNotificationSound();
             showToast(
@@ -1724,6 +2099,7 @@ onUnmounted(() => {
     clearInterval(pruneHeartbeatInterval);
     window.removeEventListener('focus', sendHeartbeat);
     window.removeEventListener('click', closeAllPickers);
+    window.removeEventListener('keydown', handleGlobalKeydown);
 
     if (window.Echo) {
         window.Echo.leave('online');
@@ -1738,6 +2114,9 @@ onUnmounted(() => {
     <Head title="TalkSpace - Real-Time Chat" />
 
     <AuthenticatedLayout>
+        <!-- WebSocket Reconnect Status Banner - YB - 14-09-2026 -->
+        <WebSocketStatusBanner :status="wsStatus" />
+
         <div class="h-[calc(100dvh-4rem)] md:h-[calc(100vh-4rem)] bg-[#F8FAFC] text-slate-800 flex overflow-hidden font-sans relative">
             
             <!-- Left Sidebar: Conversations Stream (Full-height & Collapsible) -->
@@ -1775,12 +2154,32 @@ onUnmounted(() => {
                                 TalkSpace
                                 <span class="text-[10px] uppercase font-extrabold tracking-wider px-1.5 py-0.5 rounded-md bg-brand-50 text-brand-600 border border-brand-200">Live</span>
                             </h2>
-                            <p class="text-xs text-slate-500 truncate">{{ currentUser?.name }}</p>
+                            <div class="flex items-center gap-1.5 mt-0.5">
+                                <p class="text-xs text-slate-500 truncate">{{ currentUser?.name }}</p>
+                                <!-- Status Badge Trigger - YB - 14-09-2026 -->
+                                <button 
+                                    @click="openStatusModal" 
+                                    class="text-[10px] px-1.5 py-0.5 bg-slate-100 hover:bg-brand-50 text-slate-600 hover:text-brand-600 rounded-lg flex items-center gap-1 transition max-w-[130px] truncate"
+                                    :title="currentUser?.status_text || 'Set status'"
+                                >
+                                    <span>{{ currentUser?.status_emoji || '💬' }}</span>
+                                    <span class="truncate">{{ currentUser?.status_text || 'Set status' }}</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- Action Button: Only Plus button shown (centered when collapsed) -->
-                    <div :class="isSidebarCollapsed ? 'w-full flex justify-center' : 'flex items-center'">
+                    <!-- Action Button: Plus button and audio toggle -->
+                    <div :class="isSidebarCollapsed ? 'w-full flex justify-center' : 'flex items-center space-x-1.5'">
+                        <button 
+                            v-if="!isSidebarCollapsed"
+                            @click="audioNotifications.toggleSound()"
+                            class="p-2 text-slate-400 hover:text-brand-600 hover:bg-brand-50 rounded-xl transition"
+                            :title="audioNotifications.isSoundEnabled.value ? 'Mute sound' : 'Enable sound'"
+                        >
+                            <Volume2 v-if="audioNotifications.isSoundEnabled.value" class="w-4 h-4 text-brand-600" />
+                            <VolumeX v-else class="w-4 h-4 text-slate-400" />
+                        </button>
                         <button 
                             @click="openNewChatModal"
                             class="p-2.5 bg-gradient-to-tr from-brand-600 via-brand-700 to-brand-800 hover:from-brand-500 hover:to-brand-700 text-white rounded-xl shadow-md shadow-brand-600/25 transition-all duration-200 flex items-center justify-center hover:scale-105 active:scale-95"
@@ -1791,16 +2190,26 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <!-- Search Input with Glass Styling (Hidden when collapsed) -->
+                <!-- Search Input with Global Search Button (Hidden when collapsed) -->
                 <div v-if="!isSidebarCollapsed" class="px-4 pt-3 pb-2">
-                    <div class="relative">
-                        <Search class="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                        <input 
-                            v-model="searchQuery"
-                            type="text" 
-                            placeholder="Search chats or messages..." 
-                            class="w-full glass-input text-slate-800 placeholder-slate-400 text-xs rounded-xl pl-10 pr-4 py-2.5 border border-slate-200 focus:outline-none transition shadow-xs"
-                        />
+                    <div class="flex items-center gap-1.5">
+                        <div class="relative flex-1">
+                            <Search class="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                            <input 
+                                v-model="searchQuery"
+                                type="text" 
+                                placeholder="Filter conversations..." 
+                                class="w-full glass-input text-slate-800 placeholder-slate-400 text-xs rounded-xl pl-10 pr-4 py-2.5 border border-slate-200 focus:outline-none transition shadow-xs"
+                            />
+                        </div>
+                        <!-- Global Full-Text Search Drawer Trigger - YB - 14-09-2026 -->
+                        <button 
+                            @click="openSearchDrawer"
+                            class="p-2.5 bg-slate-100 hover:bg-brand-50 text-slate-600 hover:text-brand-600 rounded-xl border border-slate-200 transition-all flex items-center justify-center shadow-xs"
+                            title="Global Message Search (Ctrl+K)"
+                        >
+                            <Sparkles class="w-4 h-4 text-brand-600" />
+                        </button>
                     </div>
                 </div>
 
@@ -1862,6 +2271,32 @@ onUnmounted(() => {
                     >
                         <Users class="w-3 h-3" />
                         <span>Groups</span>
+                    </button>
+
+                    <button 
+                        @click="activeSidebarTab = 'pinned'"
+                        :class="[
+                            'px-3 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 flex-shrink-0',
+                            activeSidebarTab === 'pinned' 
+                                ? 'bg-gradient-to-r from-brand-600 via-brand-700 to-brand-800 text-white shadow-xs shadow-brand-600/20 scale-[1.02]' 
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80 hover:text-slate-800'
+                        ]"
+                    >
+                        <Pin class="w-3 h-3 text-amber-500 fill-amber-500" />
+                        <span>Pinned</span>
+                    </button>
+
+                    <button 
+                        @click="activeSidebarTab = 'archived'"
+                        :class="[
+                            'px-3 py-1.5 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 flex-shrink-0',
+                            activeSidebarTab === 'archived' 
+                                ? 'bg-gradient-to-r from-brand-600 via-brand-700 to-brand-800 text-white shadow-xs shadow-brand-600/20 scale-[1.02]' 
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200/80 hover:text-slate-800'
+                        ]"
+                    >
+                        <Archive class="w-3 h-3" />
+                        <span>Archived</span>
                     </button>
                 </div>
 
@@ -1927,11 +2362,18 @@ onUnmounted(() => {
                             <div class="flex items-center justify-between mb-1">
                                 <div class="flex items-center space-x-1.5 min-w-0 pr-2">
                                     <!-- Pin Indicator -->
-                                    <Pin v-if="pinnedConversationIds.has(conv.id)" class="w-3 h-3 text-brand-600 fill-brand-600 flex-shrink-0" />
+                                    <Pin v-if="conv.is_pinned" class="w-3 h-3 text-amber-500 fill-amber-500 flex-shrink-0" />
+                                    <!-- Mute Indicator -->
+                                    <VolumeX v-if="conv.is_muted" class="w-3 h-3 text-slate-400 flex-shrink-0" />
                                     
                                     <h3 class="font-bold text-slate-800 text-sm truncate group-hover:text-brand-600 transition">
                                         {{ conv.title }}
                                     </h3>
+
+                                    <!-- Direct Recipient Status Emoji - YB - 14-09-2026 -->
+                                    <span v-if="conv.type === 'direct' && conv.direct_recipient?.status_emoji" class="text-xs flex-shrink-0" :title="conv.direct_recipient?.status_text">
+                                        {{ conv.direct_recipient.status_emoji }}
+                                    </span>
                                 </div>
                                 <span class="text-[11px] text-slate-400 font-medium flex-shrink-0">
                                     {{ formatConversationTime(conv.last_message_at) }}
@@ -1945,16 +2387,35 @@ onUnmounted(() => {
                                     <span class="truncate" v-html="renderAppleEmojisHtml(getLatestMessagePreview(conv))"></span>
                                 </p>
 
-                                <div class="flex items-center space-x-1.5 flex-shrink-0">
-                                    <!-- Pin / Unpin Quick Toggle on Hover -->
-                                    <button 
-                                        @click="togglePinConversation(conv.id, $event)"
-                                        class="opacity-0 group-hover:opacity-100 p-1 hover:bg-slate-200/80 rounded-lg text-slate-400 hover:text-brand-600 transition"
-                                        :title="pinnedConversationIds.has(conv.id) ? 'Unpin chat' : 'Pin chat to top'"
-                                    >
-                                        <PinOff v-if="pinnedConversationIds.has(conv.id)" class="w-3.5 h-3.5" />
-                                        <Pin v-else class="w-3.5 h-3.5" />
-                                    </button>
+                                <div class="flex items-center space-x-1 flex-shrink-0">
+                                    <!-- Quick Actions Hover Toolbar (Pin, Archive, Mute) - YB - 14-09-2026 -->
+                                    <div class="opacity-0 group-hover:opacity-100 flex items-center bg-white/90 rounded-lg shadow-xs border border-slate-200/80 p-0.5 transition">
+                                        <button 
+                                            @click.stop="toggleConversationPin(conv)"
+                                            class="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-amber-600 transition"
+                                            :title="conv.is_pinned ? 'Unpin chat' : 'Pin chat to top'"
+                                        >
+                                            <PinOff v-if="conv.is_pinned" class="w-3 h-3 text-amber-600" />
+                                            <Pin v-else class="w-3 h-3" />
+                                        </button>
+
+                                        <button 
+                                            @click.stop="toggleConversationArchive(conv)"
+                                            class="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-brand-600 transition"
+                                            :title="conv.is_archived ? 'Unarchive chat' : 'Archive chat'"
+                                        >
+                                            <Archive class="w-3 h-3" />
+                                        </button>
+
+                                        <button 
+                                            @click.stop="updateConversationMute(conv, conv.is_muted ? 'unmute' : 'always')"
+                                            class="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-700 transition"
+                                            :title="conv.is_muted ? 'Unmute chat' : 'Mute notifications'"
+                                        >
+                                            <Volume2 v-if="conv.is_muted" class="w-3 h-3 text-emerald-600" />
+                                            <VolumeX v-else class="w-3 h-3" />
+                                        </button>
+                                    </div>
 
                                     <!-- Unread Badge -->
                                     <span 
@@ -2127,12 +2588,39 @@ onUnmounted(() => {
                                 <span>Video Call</span>
                             </button>
                             <div class="h-px bg-slate-100 my-1"></div>
+                            <!-- Pin / Unpin - YB - 14-09-2026 -->
                             <button 
-                                @click="scrollToBottom(true); isHeaderMenuOpen = false;"
+                                @click="toggleConversationPin(activeConversation); isHeaderMenuOpen = false;"
+                                class="w-full px-4 py-2.5 text-left text-sm font-semibold text-slate-700 hover:text-amber-600 hover:bg-amber-50 flex items-center gap-2.5 transition"
+                            >
+                                <PinOff v-if="activeConversation.is_pinned" class="w-4 h-4 text-amber-600" />
+                                <Pin v-else class="w-4 h-4 text-amber-600" />
+                                <span>{{ activeConversation.is_pinned ? 'Unpin Conversation' : 'Pin Conversation' }}</span>
+                            </button>
+                            <!-- Archive / Unarchive - YB - 14-09-2026 -->
+                            <button 
+                                @click="toggleConversationArchive(activeConversation); isHeaderMenuOpen = false;"
+                                class="w-full px-4 py-2.5 text-left text-sm font-semibold text-slate-700 hover:text-brand-600 hover:bg-brand-50 flex items-center gap-2.5 transition"
+                            >
+                                <Archive class="w-4 h-4 text-brand-600" />
+                                <span>{{ activeConversation.is_archived ? 'Unarchive Chat' : 'Archive Chat' }}</span>
+                            </button>
+                            <!-- Mute Notifications - YB - 14-09-2026 -->
+                            <button 
+                                @click="updateConversationMute(activeConversation, activeConversation.is_muted ? 'unmute' : 'always'); isHeaderMenuOpen = false;"
                                 class="w-full px-4 py-2.5 text-left text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-50 flex items-center gap-2.5 transition"
                             >
-                                <MessageSquare class="w-4 h-4 text-slate-500" />
-                                <span>Scroll to Latest</span>
+                                <Volume2 v-if="activeConversation.is_muted" class="w-4 h-4 text-emerald-600" />
+                                <VolumeX v-else class="w-4 h-4 text-slate-500" />
+                                <span>{{ activeConversation.is_muted ? 'Unmute Notifications' : 'Mute Notifications' }}</span>
+                            </button>
+                            <!-- Global Search - YB - 14-09-2026 -->
+                            <button 
+                                @click="openSearchDrawer(); isHeaderMenuOpen = false;"
+                                class="w-full px-4 py-2.5 text-left text-sm font-semibold text-slate-700 hover:text-brand-600 hover:bg-brand-50 flex items-center gap-2.5 transition"
+                            >
+                                <Sparkles class="w-4 h-4 text-brand-600" />
+                                <span>Global Search (Ctrl+K)</span>
                             </button>
                         </div>
                     </div>
@@ -2242,7 +2730,8 @@ onUnmounted(() => {
                 <div 
                     v-else 
                     ref="messagesContainer"
-                    class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 custom-scrollbar bg-[#F1F5F9]"
+                    @scroll="handleMessagesScroll"
+                    class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 custom-scrollbar bg-[#F1F5F9] relative"
                 >
                     <div 
                         v-if="messageList.length === 0" 
@@ -2268,6 +2757,9 @@ onUnmounted(() => {
 
                         <!-- Message Bubbles & Centered System Badges -->
                         <template v-for="msg in group.messages" :key="msg.id">
+                            <!-- Unread Messages Separator - YB - 14-09-2026 -->
+                            <UnreadSeparator v-if="msg.id === firstUnreadMessageId" />
+
                             <!-- Group System Info Badge (Centered like Today/Yesterday) - YB - 26-08-2026 -->
                             <div 
                                 v-if="msg.type === 'system' && !msg.attachment_path" 
@@ -2336,11 +2828,19 @@ onUnmounted(() => {
                                             <p class="text-[11px] truncate opacity-90 font-medium mt-0.5" v-html="renderAppleEmojisHtml(msg.reply_to.body || (msg.reply_to.attachment_name ? '📎 ' + msg.reply_to.attachment_name : ''))"></p>
                                         </div>
 
-                                        <!-- Image Attachment -->
-                                        <div v-if="msg.type === 'image' && msg.attachment_url" class="mb-2 max-w-sm rounded-xl overflow-hidden shadow-md">
-                                            <a :href="msg.attachment_url" target="_blank" rel="noopener noreferrer">
-                                                <img :src="msg.attachment_url" alt="Attachment" class="w-full h-auto max-h-72 object-cover rounded-xl hover:scale-[1.02] transition duration-200" />
-                                            </a>
+                                        <!-- Voice Note Audio Player - YB - 14-09-2026 -->
+                                        <div v-if="msg.type === 'voice' || msg.audio_waveform" class="mb-1">
+                                            <VoiceNotePlayer
+                                                :audio-url="msg.attachment_url"
+                                                :duration="msg.audio_duration || 0"
+                                                :waveform="msg.audio_waveform || []"
+                                                :is-sender="msg.sender_id === currentUser?.id"
+                                            />
+                                        </div>
+
+                                        <!-- Image Attachment with Lightbox - YB - 14-09-2026 -->
+                                        <div v-else-if="msg.type === 'image' && msg.attachment_url" class="mb-2 max-w-sm rounded-xl overflow-hidden shadow-md cursor-pointer group/img" @click="openLightbox(msg.attachment_url, msg.attachment_name, 'image')">
+                                            <img :src="msg.attachment_url" alt="Attachment" class="w-full h-auto max-h-72 object-cover rounded-xl group-hover/img:scale-[1.02] transition duration-200" />
                                         </div>
 
                                         <!-- File Attachment -->
@@ -2387,7 +2887,7 @@ onUnmounted(() => {
                                             </div>
                                         </div>
 
-                                        <!-- Text Body (with Apple iOS Emojis & Big Emoji Support) - YB - 26-08-2026 -->
+                                        <!-- Text Body (with Apple iOS Emojis, @Mentions & Big Emoji Support) - YB - 14-09-2026 -->
                                         <div v-else-if="msg.body">
                                             <p 
                                                 :class="[
@@ -2395,7 +2895,7 @@ onUnmounted(() => {
                                                     msg.is_deleted_for_everyone ? 'italic text-slate-400 opacity-90' : '',
                                                     isOnlyEmojis(msg.body) ? 'big-emoji-only leading-normal py-1' : 'leading-relaxed'
                                                 ]"
-                                                v-html="renderAppleEmojisHtml(msg.body)"
+                                                v-html="renderMessageBody(msg)"
                                             ></p>
                                         </div>
 
@@ -2529,6 +3029,15 @@ onUnmounted(() => {
                                             <span>Reply</span>
                                         </button>
 
+                                        <!-- Forward Message - YB - 14-09-2026 -->
+                                        <button 
+                                            @click="openForwardModal(msg)"
+                                            class="w-full px-3.5 py-2 text-xs text-left hover:bg-slate-50 flex items-center gap-2 font-medium text-slate-700"
+                                        >
+                                            <Share2 class="w-3.5 h-3.5 text-indigo-600" />
+                                            <span>Forward</span>
+                                        </button>
+
                                         <!-- Pin / Unpin Message -->
                                         <button 
                                             @click="togglePinMessage(msg)"
@@ -2572,6 +3081,23 @@ onUnmounted(() => {
                             </div>
                         </template>
                     </div>
+
+                    <!-- Animated Typing Bubble in message timeline - YB - 14-09-2026 -->
+                    <TypingIndicatorBubble 
+                        v-if="typingUsers.size > 0" 
+                        :user-names="Array.from(typingUsers.values())" 
+                    />
+
+                    <!-- Sticky Floating Scroll To Bottom Button - YB - 14-09-2026 -->
+                    <button 
+                        v-if="showScrollToBottom"
+                        @click="scrollToBottom(true)"
+                        class="fixed bottom-24 right-8 z-30 px-3.5 py-2 bg-white/95 backdrop-blur-md text-slate-700 hover:text-brand-600 border border-slate-200/80 rounded-full shadow-xl flex items-center gap-1.5 text-xs font-bold transition-all hover:scale-105 active:scale-95 animate-in fade-in slide-in-from-bottom-2"
+                        title="Scroll to latest messages"
+                    >
+                        <ChevronDown class="w-4 h-4 text-brand-600 animate-bounce" />
+                        <span>Latest</span>
+                    </button>
                 </div>
 
                 <!-- Private Group Pending Approval Overlay Card - YB - 26-08-2026 -->
@@ -2647,8 +3173,21 @@ onUnmounted(() => {
                         </button>
                     </div>
 
-                    <!-- Form when editing (with Apple iOS Emojis) - YB - 08-09-2026 -->
-                    <form v-if="editingMessage" @submit.prevent="saveEditMessage" class="flex items-end space-x-1.5 sm:space-x-2.5 relative">
+                    <!-- 1. Voice Recording Mode Bar - YB - 14-09-2026 -->
+                    <VoiceRecorderBar
+                        v-if="voiceRecorder.isRecording.value"
+                        :is-recording="voiceRecorder.isRecording.value"
+                        :is-paused="voiceRecorder.isPaused.value"
+                        :duration="voiceRecorder.recordingDuration.value"
+                        :waveform="voiceRecorder.waveform.value"
+                        @stop="handleSendVoiceRecording"
+                        @cancel="handleCancelVoiceRecording"
+                        @pause="voiceRecorder.pauseRecording"
+                        @resume="voiceRecorder.resumeRecording"
+                    />
+
+                    <!-- 2. Form when editing (with Apple iOS Emojis) - YB - 08-09-2026 -->
+                    <form v-else-if="editingMessage" @submit.prevent="saveEditMessage" class="flex items-end space-x-1.5 sm:space-x-2.5 relative">
                         <!-- Apple iOS Emoji Picker Button for Edit Mode -->
                         <div class="relative flex-shrink-0">
                             <button 
@@ -2701,7 +3240,7 @@ onUnmounted(() => {
                         </button>
                     </form>
 
-                    <!-- Normal Send Form (with Apple iOS Emojis) -->
+                    <!-- 3. Normal Send Form (with Apple iOS Emojis, @Mentions & Voice Notes) -->
                     <form v-else @submit.prevent="sendMessage" class="flex items-end space-x-1.5 sm:space-x-2.5 relative">
                         <!-- Attachment Input Button -->
                         <input 
@@ -2746,17 +3285,34 @@ onUnmounted(() => {
                             </div>
                         </div>
 
-                        <!-- Rich Apple iOS Emoji Chat Input -->
+                        <!-- Rich Apple iOS Emoji Chat Input with @Mentions Popover -->
                         <div class="flex-1 relative min-w-0">
+                            <!-- @Mention Popover in group chats - YB - 14-09-2026 -->
+                            <MentionPopover
+                                :show="isMentionPopoverOpen"
+                                :users="mentionableUsers"
+                                @select="handleMentionSelect"
+                            />
+
                             <AppleChatInput 
                                 ref="composerInputRef"
                                 v-model="messageInput"
-                                placeholder="Type a message..."
+                                placeholder="Type a message or @mention..."
                                 @send="sendMessage"
-                                @typing="handleTypingInput"
+                                @typing="handleComposerInputChange"
                                 maxHeight="9rem"
                             />
                         </div>
+
+                        <!-- Voice Note Microphone Button - YB - 14-09-2026 -->
+                        <button 
+                            type="button" 
+                            @click="handleStartVoiceRecording"
+                            class="p-2.5 sm:p-3 text-slate-500 hover:text-brand-600 hover:bg-brand-50 rounded-2xl transition-all flex-shrink-0 border border-slate-200 bg-slate-50 shadow-xs hover:scale-105 active:scale-95"
+                            title="Record Voice Note"
+                        >
+                            <Mic class="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
 
                         <!-- Send Button with Brand Glow -->
                         <button 
@@ -3761,5 +4317,40 @@ onUnmounted(() => {
                 </div>
             </div>
         </div>
+
+        <!-- 11. Forward Message Modal - YB - 14-09-2026 -->
+        <ForwardMessageModal 
+            :show="isForwardModalOpen" 
+            :message-to-forward="messageToForward" 
+            :conversations="localConversations" 
+            @close="isForwardModalOpen = false" 
+            @forwarded="handleMessageForwarded" 
+        />
+
+        <!-- 12. Media Lightbox Gallery Modal - YB - 14-09-2026 -->
+        <MediaLightbox 
+            :is-open="lightboxMedia.isOpen" 
+            :media-url="lightboxMedia.url" 
+            :media-name="lightboxMedia.name" 
+            :media-type="lightboxMedia.type" 
+            @close="closeLightbox" 
+        />
+
+        <!-- 13. Global Historical Message Search Drawer - YB - 14-09-2026 -->
+        <MessageSearchDrawer 
+            :is-open="isSearchDrawerOpen" 
+            :active-conversation-id="activeConversation?.id" 
+            @close="isSearchDrawerOpen = false" 
+            @select-message="handleSearchMessageSelect" 
+        />
+
+        <!-- 14. User Profile Status Modal - YB - 14-09-2026 -->
+        <UserStatusModal 
+            :show="isStatusModalOpen" 
+            :current-status-text="currentUser?.status_text" 
+            :current-status-emoji="currentUser?.status_emoji" 
+            @close="isStatusModalOpen = false" 
+            @updated="handleStatusUpdated" 
+        />
     </AuthenticatedLayout>
 </template>

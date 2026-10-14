@@ -71,8 +71,11 @@ class ChatController extends Controller
         $conversations = $this->chatService->getUserConversations($user);
         $conversation->loadMissing(['participants', 'conversationUsers', 'latestMessage.sender']);
         
+        $aroundMessageId = $request->query('around_message_id') ? (int) $request->query('around_message_id') : null;
+
         // Only load messages if user is an active member, protecting private group chat history
-        $messages = $isMember ? $this->chatService->getConversationMessages($conversation, 100) : collect();
+        // YB - 14-09-2026 Support jumping to historical message window
+        $messages = $isMember ? $this->chatService->getConversationMessages($conversation, 100, $aroundMessageId) : collect();
 
         return Inertia::render('Chat/Index', [
             'conversations' => ConversationResource::collection($conversations)->resolve($request),
@@ -518,4 +521,177 @@ class ChatController extends Controller
             'message' => (new MessageResource($message))->resolve($request),
         ]);
     }
+
+    /**
+     * Store and broadcast a voice note audio recording.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function storeVoiceNote(Request $request, Conversation $conversation): JsonResponse
+    {
+        Gate::authorize('sendMessage', $conversation);
+
+        $request->validate([
+            'audio' => ['required', 'file', 'mimes:webm,ogg,mp3,wav,m4a,mp4', 'max:20480'], // 20MB max
+            'duration' => ['required', 'integer', 'min:1', 'max:3600'],
+            'waveform' => ['nullable', 'array'],
+            'waveform.*' => ['integer', 'min:0', 'max:100'],
+            'reply_to_id' => ['nullable', 'integer', 'exists:messages,id'],
+        ]);
+
+        $message = $this->chatService->sendVoiceNote(
+            $request->user(),
+            $conversation,
+            $request->file('audio'),
+            (int) $request->input('duration'),
+            (array) $request->input('waveform', []),
+            $request->input('reply_to_id') ? (int) $request->input('reply_to_id') : null
+        );
+
+        return response()->json([
+            'message' => (new MessageResource($message))->resolve($request),
+        ], 201);
+    }
+
+    /**
+     * Search historical messages across user's conversations using full-text search.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function searchMessages(Request $request): JsonResponse
+    {
+        $request->validate([
+            'query' => ['required', 'string', 'min:1', 'max:255'],
+            'conversation_id' => ['nullable', 'integer', 'exists:conversations,id'],
+        ]);
+
+        $messages = $this->chatService->searchMessages(
+            $request->user(),
+            (string) $request->query('query'),
+            $request->query('conversation_id') ? (int) $request->query('conversation_id') : null
+        );
+
+        return response()->json([
+            'messages' => MessageResource::collection($messages)->resolve($request),
+        ]);
+    }
+
+    /**
+     * Forward an existing message to one or more conversations.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function forwardMessage(Request $request, Message $message): JsonResponse
+    {
+        $request->validate([
+            'conversation_ids' => ['required', 'array', 'min:1', 'max:10'],
+            'conversation_ids.*' => ['required', 'integer', 'exists:conversations,id'],
+        ]);
+
+        $forwarded = $this->chatService->forwardMessage(
+            $request->user(),
+            $message,
+            (array) $request->input('conversation_ids')
+        );
+
+        return response()->json([
+            'messages' => MessageResource::collection(collect($forwarded))->resolve($request),
+            'count' => count($forwarded),
+            'message' => 'Message forwarded successfully',
+        ]);
+    }
+
+    /**
+     * Toggle pinned status of conversation.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function togglePinConversation(Request $request, Conversation $conversation): JsonResponse
+    {
+        Gate::authorize('view', $conversation);
+
+        $result = $this->chatService->togglePinConversation($request->user(), $conversation);
+
+        return response()->json($result);
+    }
+
+    /**
+     * Toggle archived status of conversation.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function toggleArchiveConversation(Request $request, Conversation $conversation): JsonResponse
+    {
+        Gate::authorize('view', $conversation);
+
+        $result = $this->chatService->toggleArchiveConversation($request->user(), $conversation);
+
+        return response()->json($result);
+    }
+
+    /**
+     * Update mute notifications settings for conversation.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function updateMuteSettings(Request $request, Conversation $conversation): JsonResponse
+    {
+        Gate::authorize('view', $conversation);
+
+        $request->validate([
+            'duration' => ['nullable', 'string', 'in:unmute,8hours,1week,always'],
+        ]);
+
+        $result = $this->chatService->updateMuteSettings(
+            $request->user(),
+            $conversation,
+            $request->input('duration')
+        );
+
+        return response()->json($result);
+    }
+
+    /**
+     * Update user profile status message.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function updateUserStatus(Request $request): JsonResponse
+    {
+        $request->validate([
+            'status_text' => ['nullable', 'string', 'max:255'],
+            'status_emoji' => ['nullable', 'string', 'max:32'],
+            'expires_in_minutes' => ['nullable', 'integer', 'min:0', 'max:525600'],
+        ]);
+
+        $user = $this->chatService->updateUserStatus(
+            $request->user(),
+            $request->input('status_text'),
+            $request->input('status_emoji'),
+            $request->input('expires_in_minutes') ? (int) $request->input('expires_in_minutes') : null
+        );
+
+        return response()->json([
+            'user' => (new UserResource($user))->resolve($request),
+            'message' => 'Status updated successfully',
+        ]);
+    }
+
+    /**
+     * Save Web Push subscription.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function savePushSubscription(Request $request): JsonResponse
+    {
+        $request->validate([
+            'subscription' => ['required', 'array'],
+            'subscription.endpoint' => ['required', 'string'],
+        ]);
+
+        $this->chatService->savePushSubscription($request->user(), (array) $request->input('subscription'));
+
+        return response()->json(['success' => true]);
+    }
 }
+

@@ -32,6 +32,16 @@ Route::middleware('auth')->group(function () {
     Route::post('/chat/messages/{message}/pin', [ChatController::class, 'togglePinMessage'])->name('chat.messages.pin.toggle');
     Route::get('/chat/messages/{message}/info', [ChatController::class, 'getMessageDeliveryInfo'])->name('chat.messages.info');
     Route::get('/chat-users/search', [ChatController::class, 'searchUsers'])->middleware('throttle:30,1')->name('chat.users.search');
+    
+    // New Feature Routes - YB - 14-09-2026
+    Route::get('/chat-messages/search', [ChatController::class, 'searchMessages'])->middleware('throttle:60,1')->name('chat.messages.search');
+    Route::post('/chat/{conversation}/voice-notes', [ChatController::class, 'storeVoiceNote'])->middleware('throttle:30,1')->name('chat.messages.voice');
+    Route::post('/chat/messages/{message}/forward', [ChatController::class, 'forwardMessage'])->name('chat.messages.forward');
+    Route::post('/chat/{conversation}/pin', [ChatController::class, 'togglePinConversation'])->name('chat.conversations.pin');
+    Route::post('/chat/{conversation}/archive', [ChatController::class, 'toggleArchiveConversation'])->name('chat.conversations.archive');
+    Route::post('/chat/{conversation}/mute', [ChatController::class, 'updateMuteSettings'])->name('chat.conversations.mute');
+    Route::post('/user/status', [ChatController::class, 'updateUserStatus'])->name('user.status.update');
+    Route::post('/user/push-subscription', [ChatController::class, 'savePushSubscription'])->name('user.push.subscribe');
 
     // Group Management Routes - YB - 26-08-2026
     Route::post('/chat/{conversation}/members', [ChatController::class, 'addMembers'])->name('chat.groups.members.add');

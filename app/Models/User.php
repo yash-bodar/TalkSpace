@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
-#[Fillable(['name', 'email', 'password', 'avatar_path', 'last_active_at'])]
+#[Fillable(['name', 'email', 'password', 'avatar_path', 'last_active_at', 'status_text', 'status_emoji', 'status_expires_at', 'web_push_subscription'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -20,7 +20,7 @@ class User extends Authenticatable
     /**
      * Get the attributes that should be cast.
      *
-     * // YB - 24-08-2026 code comment
+     * // YB - 14-09-2026 code comment
      * @return array<string, string>
      */
     protected function casts(): array
@@ -28,6 +28,8 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'last_active_at' => 'datetime',
+            'status_expires_at' => 'datetime',
+            'web_push_subscription' => 'array',
             'password' => 'hashed',
         ];
     }
@@ -40,7 +42,17 @@ class User extends Authenticatable
     public function conversations(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
     {
         return $this->belongsToMany(Conversation::class, 'conversation_users')
-            ->withPivot(['role', 'last_read_at'])
+            ->withPivot([
+                'role',
+                'last_read_at',
+                'last_delivered_at',
+                'is_pinned',
+                'pinned_at',
+                'is_archived',
+                'archived_at',
+                'is_muted',
+                'muted_until',
+            ])
             ->withTimestamps();
     }
 

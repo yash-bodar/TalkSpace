@@ -39,10 +39,24 @@ class HandleInertiaRequests extends Middleware
             }
         }
 
+        $iceServers = [
+            ['urls' => config('services.webrtc.stun_url', 'stun:stun.l.google.com:19302')],
+        ];
+        if ($turnUrl = config('services.webrtc.turn_url')) {
+            $iceServers[] = [
+                'urls' => $turnUrl,
+                'username' => config('services.webrtc.turn_username'),
+                'credential' => config('services.webrtc.turn_credential'),
+            ];
+        }
+
         return [
             ...parent::share($request),
             'auth' => [
                 'user' => $user,
+            ],
+            'webrtcConfig' => [
+                'iceServers' => $iceServers,
             ],
             'ziggy' => fn () => [
                 ...(new Ziggy)->toArray(),

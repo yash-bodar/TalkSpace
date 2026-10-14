@@ -21,9 +21,9 @@ use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 class ChatService
 {
     /**
-     * Retrieve all conversations for the authenticated user ordered by last activity.
+     * Retrieve all conversations for the authenticated user ordered by pin status and last activity.
      *
-     * // YB - 27-08-2026 code comment
+     * // YB - 14-09-2026 code comment
      */
     public function getUserConversations(User $user): Collection
     {
@@ -45,18 +45,59 @@ class ChatService
                             )', [$user->id]);
                     });
             }])
+            ->orderByDesc('conversation_users.is_pinned')
             ->orderByDesc('last_message_at')
             ->orderByDesc('created_at')
             ->get();
     }
 
     /**
-     * Retrieve latest messages for a given conversation ordered chronologically.
+     * Retrieve latest messages for a given conversation ordered chronologically, or centered around a target message.
      *
-     * // YB - 27-08-2026 code comment
+     * // YB - 14-09-2026 code comment
      */
-    public function getConversationMessages(Conversation $conversation, int $limit = 100): Collection
+    public function getConversationMessages(Conversation $conversation, int $limit = 100, ?int $aroundMessageId = null): Collection
     {
+        if ($aroundMessageId) {
+            $target = $conversation->messages()->find($aroundMessageId);
+            if ($target) {
+                $halfLimit = (int) floor($limit / 2);
+
+                $olderMessages = $conversation->messages()
+                    ->with(['sender', 'replyTo.sender', 'reactions.user'])
+                    ->where(function ($q) use ($target) {
+                        $q->where('created_at', '<', $target->created_at)
+                            ->orWhere(function ($sub) use ($target) {
+                                $sub->where('created_at', '=', $target->created_at)
+                                    ->where('id', '<', $target->id);
+                            });
+                    })
+                    ->latest('created_at')
+                    ->latest('id')
+                    ->take($halfLimit)
+                    ->get()
+                    ->reverse();
+
+                $target->loadMissing(['sender', 'replyTo.sender', 'reactions.user']);
+
+                $newerMessages = $conversation->messages()
+                    ->with(['sender', 'replyTo.sender', 'reactions.user'])
+                    ->where(function ($q) use ($target) {
+                        $q->where('created_at', '>', $target->created_at)
+                            ->orWhere(function ($sub) use ($target) {
+                                $sub->where('created_at', '=', $target->created_at)
+                                    ->where('id', '>', $target->id);
+                            });
+                    })
+                    ->oldest('created_at')
+                    ->oldest('id')
+                    ->take($halfLimit)
+                    ->get();
+
+                return $olderMessages->concat([$target])->concat($newerMessages)->values();
+            }
+        }
+
         return $conversation->messages()
             ->with(['sender', 'replyTo.sender', 'reactions.user'])
             ->latest('created_at')
@@ -232,6 +273,7 @@ class ChatService
                 'attachment_path' => $attachmentPath,
                 'attachment_name' => $attachmentName,
                 'attachment_size' => $attachmentSize,
+                'mentioned_user_ids' => ! empty($data['mentioned_user_ids']) ? (array) $data['mentioned_user_ids'] : null,
             ]);
 
             // Update conversation last_message_at timestamp
@@ -1111,4 +1153,300 @@ class ChatService
             'total_participants' => $participants->count(),
         ];
     }
+
+    /**
+     * Send a voice note audio message with waveform data and duration.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function sendVoiceNote(
+        User $sender,
+        Conversation $conversation,
+        UploadedFile $audioFile,
+        int $duration,
+        array $waveform,
+        ?int $replyToId = null
+    ): Message {
+        if (! $conversation->isParticipant($sender->id)) {
+            throw new AccessDeniedHttpException('User is not a participant in this conversation.');
+        }
+
+        return DB::transaction(function () use ($sender, $conversation, $audioFile, $duration, $waveform, $replyToId) {
+            $path = $audioFile->store('voice_notes/' . $conversation->id, 'public');
+            $originalName = $audioFile->getClientOriginalName() ?: 'voice-note.webm';
+            $size = $audioFile->getSize();
+
+            $message = Message::create([
+                'conversation_id' => $conversation->id,
+                'reply_to_id' => $replyToId,
+                'sender_id' => $sender->id,
+                'body' => '🎤 Voice message',
+                'type' => 'voice',
+                'attachment_path' => $path,
+                'attachment_name' => $originalName,
+                'attachment_size' => $size,
+                'audio_waveform' => $waveform,
+                'audio_duration' => $duration,
+            ]);
+
+            $conversation->update(['last_message_at' => $message->created_at]);
+
+            ConversationUser::where('conversation_id', $conversation->id)
+                ->where('user_id', $sender->id)
+                ->update(['last_read_at' => now()]);
+
+            $message->load(['sender', 'replyTo.sender', 'reactions.user', 'conversation.participants', 'conversation.conversationUsers']);
+
+            try {
+                broadcast(new MessageSent($message));
+            } catch (\Throwable $e) {
+                Log::warning('Broadcast voice MessageSent failed: ' . $e->getMessage());
+            }
+
+            return $message;
+        });
+    }
+
+    /**
+     * Search messages using full-text index across all user's joined conversations.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function searchMessages(User $user, string $query, ?int $conversationId = null, int $limit = 30): Collection
+    {
+        $conversationIds = $user->conversations()->pluck('conversations.id')->toArray();
+
+        if ($conversationId) {
+            if (! in_array($conversationId, $conversationIds)) {
+                throw new AccessDeniedHttpException('You do not have access to this conversation.');
+            }
+            $conversationIds = [$conversationId];
+        }
+
+        if (empty($conversationIds) || trim($query) === '') {
+            return new Collection();
+        }
+
+        return Message::whereIn('conversation_id', $conversationIds)
+            ->where('is_deleted_for_everyone', false)
+            ->where(function ($q) use ($user) {
+                $q->whereNull('deleted_for_user_ids')
+                    ->orWhereJsonDoesntContain('deleted_for_user_ids', $user->id);
+            })
+            ->where(function ($q) use ($query) {
+                $trimmed = trim($query);
+                $q->where('body', 'like', "%{$trimmed}%");
+            })
+            ->with(['sender', 'conversation'])
+            ->latest('created_at')
+            ->take($limit)
+            ->get();
+    }
+
+    /**
+     * Forward an existing message to one or multiple target conversations.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function forwardMessage(User $user, Message $message, array $targetConversationIds): array
+    {
+        if (! $message->conversation || ! $message->conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('You do not have permission to forward this message.');
+        }
+
+        if ($message->is_deleted_for_everyone) {
+            throw new \InvalidArgumentException('Cannot forward a deleted message.');
+        }
+
+        $createdMessages = [];
+
+        DB::transaction(function () use ($user, $message, $targetConversationIds, &$createdMessages) {
+            foreach ($targetConversationIds as $targetConvId) {
+                $targetConv = Conversation::findOrFail($targetConvId);
+
+                if (! $targetConv->isParticipant($user->id)) {
+                    continue;
+                }
+
+                $forwarded = Message::create([
+                    'conversation_id' => $targetConv->id,
+                    'sender_id' => $user->id,
+                    'body' => $message->body,
+                    'type' => $message->type,
+                    'attachment_path' => $message->attachment_path,
+                    'attachment_name' => $message->attachment_name,
+                    'attachment_size' => $message->attachment_size,
+                    'audio_waveform' => $message->audio_waveform,
+                    'audio_duration' => $message->audio_duration,
+                ]);
+
+                $targetConv->update(['last_message_at' => $forwarded->created_at]);
+
+                ConversationUser::where('conversation_id', $targetConv->id)
+                    ->where('user_id', $user->id)
+                    ->update(['last_read_at' => now()]);
+
+                $forwarded->load(['sender', 'replyTo.sender', 'reactions.user', 'conversation.participants', 'conversation.conversationUsers']);
+
+                try {
+                    broadcast(new MessageSent($forwarded));
+                } catch (\Throwable $e) {
+                    Log::warning('Broadcast forward MessageSent failed: ' . $e->getMessage());
+                }
+
+                $createdMessages[] = $forwarded;
+            }
+        });
+
+        return $createdMessages;
+    }
+
+    /**
+     * Toggle pinned status of a conversation for the current user.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function togglePinConversation(User $user, Conversation $conversation): array
+    {
+        if (! $conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('User is not a participant in this conversation.');
+        }
+
+        $cu = ConversationUser::where('conversation_id', $conversation->id)
+            ->where('user_id', $user->id)
+            ->firstOrFail();
+
+        $isPinned = ! $cu->is_pinned;
+        $pinnedAt = $isPinned ? now() : null;
+
+        $cu->update([
+            'is_pinned' => $isPinned,
+            'pinned_at' => $pinnedAt,
+        ]);
+
+        try {
+            broadcast(new \App\Events\ConversationPinned($conversation->id, $user, $isPinned, $pinnedAt?->toISOString()));
+        } catch (\Throwable $e) {
+            Log::warning('Broadcast ConversationPinned failed: ' . $e->getMessage());
+        }
+
+        return [
+            'conversation_id' => $conversation->id,
+            'is_pinned' => $isPinned,
+            'pinned_at' => $pinnedAt?->toISOString(),
+        ];
+    }
+
+    /**
+     * Toggle archived status of a conversation for the current user.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function toggleArchiveConversation(User $user, Conversation $conversation): array
+    {
+        if (! $conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('User is not a participant in this conversation.');
+        }
+
+        $cu = ConversationUser::where('conversation_id', $conversation->id)
+            ->where('user_id', $user->id)
+            ->firstOrFail();
+
+        $isArchived = ! $cu->is_archived;
+        $archivedAt = $isArchived ? now() : null;
+
+        $cu->update([
+            'is_archived' => $isArchived,
+            'archived_at' => $archivedAt,
+        ]);
+
+        return [
+            'conversation_id' => $conversation->id,
+            'is_archived' => $isArchived,
+            'archived_at' => $archivedAt?->toISOString(),
+        ];
+    }
+
+    /**
+     * Update mute notifications settings for a conversation.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function updateMuteSettings(User $user, Conversation $conversation, ?string $duration = null): array
+    {
+        if (! $conversation->isParticipant($user->id)) {
+            throw new AccessDeniedHttpException('User is not a participant in this conversation.');
+        }
+
+        $cu = ConversationUser::where('conversation_id', $conversation->id)
+            ->where('user_id', $user->id)
+            ->firstOrFail();
+
+        $isMuted = false;
+        $mutedUntil = null;
+
+        if ($duration && $duration !== 'unmute') {
+            $isMuted = true;
+            $mutedUntil = match ($duration) {
+                '8hours' => now()->addHours(8),
+                '1week' => now()->addWeek(),
+                'always' => null,
+                default => null,
+            };
+        }
+
+        $cu->update([
+            'is_muted' => $isMuted,
+            'muted_until' => $mutedUntil,
+        ]);
+
+        return [
+            'conversation_id' => $conversation->id,
+            'is_muted' => $isMuted,
+            'muted_until' => $mutedUntil?->toISOString(),
+        ];
+    }
+
+    /**
+     * Update user profile status message and presence emoji.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function updateUserStatus(
+        User $user,
+        ?string $statusText,
+        ?string $statusEmoji = null,
+        ?int $expiresInMinutes = null
+    ): User {
+        $expiresAt = $expiresInMinutes && $expiresInMinutes > 0 ? now()->addMinutes($expiresInMinutes) : null;
+
+        $user->update([
+            'status_text' => $statusText ? trim($statusText) : null,
+            'status_emoji' => $statusEmoji ? trim($statusEmoji) : null,
+            'status_expires_at' => $expiresAt,
+        ]);
+
+        try {
+            broadcast(new \App\Events\UserStatusUpdated($user));
+        } catch (\Throwable $e) {
+            Log::warning('Broadcast UserStatusUpdated failed: ' . $e->getMessage());
+        }
+
+        return $user;
+    }
+
+    /**
+     * Save Web Push API subscription payload on user record.
+     *
+     * // YB - 14-09-2026 code comment
+     */
+    public function savePushSubscription(User $user, array $subscription): bool
+    {
+        $user->update([
+            'web_push_subscription' => $subscription,
+        ]);
+
+        return true;
+    }
 }
+
