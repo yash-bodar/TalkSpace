@@ -98,38 +98,6 @@ const fillTestAccount = (email, password = 'password') => {
             </button>
         </form>
 
-        <!-- Quick 1-Click Test Accounts Login Selector -->
-        <div class="mt-6 pt-5 border-t border-slate-100">
-            <p class="text-[11px] font-bold uppercase tracking-wider text-slate-400 text-center mb-2.5">
-                ⚡ 1-Click Quick Test Accounts
-            </p>
-            <div class="grid grid-cols-2 gap-2">
-                <button 
-                    type="button"
-                    @click="fillTestAccount('yash@parextech.com', 'Yash@123')"
-                    class="p-2.5 bg-slate-50 hover:bg-brand-50/50 hover:border-brand-300 border border-slate-200/80 rounded-2xl text-left transition flex items-center gap-2 group cursor-pointer"
-                >
-                    <img src="https://ui-avatars.com/api/?name=Yash+Bodar&background=d91a8d&color=fff" class="w-7 h-7 rounded-xl shadow-xs" />
-                    <div class="truncate">
-                        <p class="text-xs font-bold text-slate-800 group-hover:text-brand-600 truncate">Yash Bodar</p>
-                        <p class="text-[10px] text-slate-500 truncate">yash@parextech</p>
-                    </div>
-                </button>
-
-                <button 
-                    type="button"
-                    @click="fillTestAccount('gautam@parextech.com', 'Gautam@123')"
-                    class="p-2.5 bg-slate-50 hover:bg-brand-50/50 hover:border-brand-300 border border-slate-200/80 rounded-2xl text-left transition flex items-center gap-2 group cursor-pointer"
-                >
-                    <img src="https://ui-avatars.com/api/?name=Gautam&background=8b1e7c&color=fff" class="w-7 h-7 rounded-xl shadow-xs" />
-                    <div class="truncate">
-                        <p class="text-xs font-bold text-slate-800 group-hover:text-brand-600 truncate">Gautam</p>
-                        <p class="text-[10px] text-slate-500 truncate">gautam@parextech</p>
-                    </div>
-                </button>
-            </div>
-        </div>
-
         <div class="mt-6 text-center text-xs text-slate-500">
             Don't have an account?
             <Link :href="route('register')" class="text-brand-600 hover:text-brand-700 font-bold ml-1 transition">

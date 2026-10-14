@@ -26,14 +26,38 @@ class ConversationResource extends JsonResource
             ? ($directRecipient?->avatar_url ?? null)
             : $this->avatar_url;
 
-        // Get user's last_read_at timestamp from pivot or relation
+        // Get user's last_read_at timestamp and pin/archive/mute states from pivot or relation
         $lastReadAt = null;
+        $isPinned = false;
+        $pinnedAt = null;
+        $isArchived = false;
+        $archivedAt = null;
+        $isMuted = false;
+        $mutedUntil = null;
+
         if ($this->relationLoaded('conversationUsers') && $this->conversationUsers) {
             $userPivot = $this->conversationUsers->firstWhere('user_id', $authUserId);
             $lastReadAt = $userPivot?->last_read_at;
+            $isPinned = (bool) ($userPivot?->is_pinned ?? false);
+            $pinnedAt = $userPivot?->pinned_at;
+            $isArchived = (bool) ($userPivot?->is_archived ?? false);
+            $archivedAt = $userPivot?->archived_at;
+            $isMuted = (bool) ($userPivot?->is_muted ?? false);
+            $mutedUntil = $userPivot?->muted_until;
         } elseif ($this->relationLoaded('participants') && $this->participants) {
             $currentParticipant = $this->participants->firstWhere('id', $authUserId);
             $lastReadAt = $currentParticipant?->pivot?->last_read_at;
+            $isPinned = (bool) ($currentParticipant?->pivot?->is_pinned ?? false);
+            $pinnedAt = $currentParticipant?->pivot?->pinned_at;
+            $isArchived = (bool) ($currentParticipant?->pivot?->is_archived ?? false);
+            $archivedAt = $currentParticipant?->pivot?->archived_at;
+            $isMuted = (bool) ($currentParticipant?->pivot?->is_muted ?? false);
+            $mutedUntil = $currentParticipant?->pivot?->muted_until;
+        }
+
+        // Check if mute is currently active
+        if ($isMuted && $mutedUntil && now()->gt($mutedUntil)) {
+            $isMuted = false;
         }
 
         // Calculate unread message count efficiently
@@ -142,6 +166,12 @@ class ConversationResource extends JsonResource
             'is_admin' => $this->isAdmin($authUserId),
             'user_role' => $this->getUserRole($authUserId),
             'is_member' => $this->isParticipant($authUserId),
+            'is_pinned' => $isPinned,
+            'pinned_at' => $pinnedAt?->toISOString(),
+            'is_archived' => $isArchived,
+            'archived_at' => $archivedAt?->toISOString(),
+            'is_muted' => $isMuted,
+            'muted_until' => $mutedUntil?->toISOString(),
             'has_pending_join_request' => $hasPendingJoinRequest,
             'join_requests' => $joinRequests,
             // YB - 26-08-2026 Resolve nested resources directly to avoid nested { data: ... } object wrapping

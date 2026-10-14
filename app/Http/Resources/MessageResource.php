@@ -99,6 +99,9 @@ class MessageResource extends JsonResource
             'attachment_url' => $this->attachment_url,
             'attachment_name' => $this->attachment_name,
             'attachment_size' => $this->attachment_size,
+            'audio_waveform' => $this->audio_waveform,
+            'audio_duration' => $this->audio_duration,
+            'mentioned_user_ids' => $this->mentioned_user_ids ?? [],
             'read_at' => $this->read_at?->toISOString(),
             'delivered_at' => $this->delivered_at?->toISOString(),
             // YB - 26-08-2026 - Multi-user group delivery & read status flags
